@@ -201,7 +201,7 @@ final class DifferentialQueryConduitAPIMethod
       if (!$diff) {
         continue;
       }
-
+	  
       $id = $revision->getID();
       $phid = $revision->getPHID();
 
@@ -225,6 +225,7 @@ final class DifferentialQueryConduitAPIMethod
         'diffs'               => $revision->getDiffIDs(),
         'commits'             => $revision->getCommitPHIDs(),
         'reviewers'           => array_values($revision->getReviewers()),
+        'reviewersState'	  => $revision->getReviewerDiffStatus(),
         'ccs'                 => array_values($revision->getCCPHIDs()),
         'hashes'              => $revision->getHashes(),
         'auxiliary'           => idx($field_data, $phid, array()),

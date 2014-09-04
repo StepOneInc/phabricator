@@ -229,6 +229,8 @@ final class DifferentialRevision extends DifferentialDAO
 
     return ipull($this->getRawRelations($relation), 'objectPHID');
   }
+  
+  
 
   public function getRawRelations($relation) {
     return idx($this->relationships, $relation, array());
@@ -348,6 +350,26 @@ final class DifferentialRevision extends DifferentialDAO
     $this->drafts[$viewer->getPHID()] = $drafts;
     return $this;
   }
+  
+    public function getReviewerDiffStatus() {
+    	$reviewer_array = array();
+    	if ($this->reviewerStatus == self::ATTACHABLE) {
+     		$reviewers = id(new DifferentialRevisionQuery())
+        		->setViewer(PhabricatorUser::getOmnipotentUser())
+        		->withPHIDs(array($this->getPHID()))
+        		->needReviewerStatus(true)
+        		->executeOne()
+        		->getReviewerStatus();
+    	} else {
+      		$reviewers = $this->getReviewerStatus();
+    	}
+    	
+    	foreach ($reviewers as $reviewer) {
+    		$reviewer_array[$reviewer->getReviewerPHID()] = $reviewer->getStatus();
+    	}
+		return $reviewer_array;
+  }
+
 
 
 /* -(  HarbormasterBuildableInterface  )------------------------------------- */
