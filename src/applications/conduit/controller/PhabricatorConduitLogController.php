@@ -3,9 +3,8 @@
 final class PhabricatorConduitLogController
   extends PhabricatorConduitController {
 
-  public function processRequest() {
-    $request = $this->getRequest();
-    $viewer = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
 
     $conn_table = new PhabricatorConduitConnectionLog();
     $call_table = new PhabricatorConduitMethodCallLog();
@@ -35,6 +34,9 @@ final class PhabricatorConduitLogController
     }
 
     $table = $this->renderCallTable($calls, $conns);
+    $box = id(new PHUIObjectBoxView())
+      ->setHeaderText(pht('Call Logs'))
+      ->setTable($table);
 
     $crumbs = $this->buildApplicationCrumbs();
     $crumbs->addTextCrumb(pht('Call Logs'));
@@ -42,11 +44,11 @@ final class PhabricatorConduitLogController
     return $this->buildApplicationPage(
       array(
         $crumbs,
-        $table,
+        $box,
         $pager,
       ),
       array(
-        'title' => 'Conduit Logs',
+        'title' => pht('Conduit Logs'),
       ));
   }
 
@@ -66,7 +68,7 @@ final class PhabricatorConduitLogController
       $conn = idx($conns, $call->getConnectionID());
       if ($conn) {
         $name = $conn->getUserName();
-        $client = ' (via '.$conn->getClient().')';
+        $client = ' '.pht('(via %s)', $conn->getClient());
       } else {
         $name = null;
         $client = null;
@@ -95,23 +97,22 @@ final class PhabricatorConduitLogController
         array($call->getMethod(), $client),
         $status,
         $call->getError(),
-        number_format($call->getDuration()).' us',
+        pht('%s us', new PhutilNumber($call->getDuration())),
         phabricator_datetime($call->getDateCreated(), $viewer),
       );
     }
 
-    $table = id(new AphrontTableView($rows))
-      ->setDeviceReadyTable(true);
+    $table = id(new AphrontTableView($rows));
 
     $table->setHeaders(
       array(
-        'Connection',
-        'User',
-        'Method',
-        'Status',
-        'Error',
-        'Duration',
-        'Date',
+        pht('Connection'),
+        pht('User'),
+        pht('Method'),
+        pht('Status'),
+        pht('Error'),
+        pht('Duration'),
+        pht('Date'),
       ));
     $table->setColumnClasses(
       array(

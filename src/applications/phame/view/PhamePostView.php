@@ -87,7 +87,7 @@ final class PhamePostView extends AphrontView {
     return phutil_tag(
       'div',
       array(
-        'class' => 'phame-post-body',
+        'class' => 'phame-post-body phabricator-remarkup',
       ),
       $this->getBody());
   }
@@ -96,7 +96,7 @@ final class PhamePostView extends AphrontView {
     return phutil_tag(
       'div',
       array(
-        'class' => 'phame-post-body',
+        'class' => 'phame-post-body phabricator-remarkup',
       ),
       $this->getSummary());
   }
@@ -173,6 +173,7 @@ final class PhamePostView extends AphrontView {
 
     $uri = $this->getSkin()->getURI('post/'.$this->getPost()->getPhameTitle());
 
+    require_celerity_resource('phame-css');
     $fb_comments = phutil_tag('div',
       array(
         'class'            => 'fb-comments',
@@ -203,7 +204,7 @@ final class PhamePostView extends AphrontView {
 
     $disqus_thread = phutil_tag('div',
       array(
-        'id' => 'disqus_thread'
+        'id' => 'disqus_thread',
       ));
 
     // protip - try some  var disqus_developer = 1; action to test locally

@@ -6,14 +6,14 @@ final class DiffusionLastModifiedController extends DiffusionController {
     return true;
   }
 
-  public function processRequest() {
+  protected function processDiffusionRequest(AphrontRequest $request) {
     $drequest = $this->getDiffusionRequest();
-    $request = $this->getRequest();
     $viewer = $request->getUser();
 
     $paths = $request->getStr('paths');
-    $paths = json_decode($paths, true);
-    if (!is_array($paths)) {
+    try {
+      $paths = phutil_json_decode($paths);
+    } catch (PhutilJSONParserException $ex) {
       return new Aphront400Response();
     }
 
@@ -98,12 +98,10 @@ final class DiffusionLastModifiedController extends DiffusionController {
       $modified = DiffusionView::linkCommit(
         $drequest->getRepository(),
         $commit->getCommitIdentifier());
-      $date = phabricator_date($epoch, $viewer);
-      $time = phabricator_time($epoch, $viewer);
+      $date = phabricator_datetime($epoch, $viewer);
     } else {
       $modified = '';
       $date = '';
-      $time = '';
     }
 
     $data = $commit->getCommitData();
@@ -137,7 +135,6 @@ final class DiffusionLastModifiedController extends DiffusionController {
     $return = array(
       'commit'    => $modified,
       'date'      => $date,
-      'time'      => $time,
       'author'    => $author,
       'details'   => $details,
     );
@@ -145,11 +142,19 @@ final class DiffusionLastModifiedController extends DiffusionController {
     if ($lint !== null) {
       $return['lint'] = phutil_tag(
         'a',
-        array('href' => $drequest->generateURI(array(
-          'action' => 'lint',
-          'lint' => null,
-        ))),
+        array(
+          'href' => $drequest->generateURI(array(
+            'action' => 'lint',
+            'lint' => null,
+          )),
+        ),
         number_format($lint));
+    }
+
+    // The client treats these results as markup, so make sure they have been
+    // escaped correctly.
+    foreach ($return as $key => $value) {
+      $return[$key] = hsprintf('%s', $value);
     }
 
     return $return;

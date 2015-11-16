@@ -1,29 +1,27 @@
 <?php
 
-final class PhameBlogLiveController extends PhameController {
-
-  private $id;
-  private $more;
+final class PhameBlogLiveController extends PhameBlogController {
 
   public function shouldAllowPublic() {
     return true;
   }
 
-  public function willProcessRequest(array $data) {
-    $this->id = idx($data, 'id');
-    $this->more = idx($data, 'more', '');
-  }
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
 
-  public function processRequest() {
-    $request = $this->getRequest();
-    $user = $request->getUser();
+    $site = $request->getSite();
+    if ($site instanceof PhameBlogSite) {
+      $blog = $site->getBlog();
+    } else {
+      $id = $request->getURIData('id');
 
-    $blog = id(new PhameBlogQuery())
-      ->setViewer($user)
-      ->withIDs(array($this->id))
-      ->executeOne();
-    if (!$blog) {
-      return new Aphront404Response();
+      $blog = id(new PhameBlogQuery())
+        ->setViewer($viewer)
+        ->withIDs(array($id))
+        ->executeOne();
+      if (!$blog) {
+        return new Aphront404Response();
+      }
     }
 
     if ($blog->getDomain() && ($request->getHost() != $blog->getDomain())) {
@@ -40,7 +38,7 @@ final class PhameBlogLiveController extends PhameController {
 
       $dialog = id(new AphrontDialogView())
         ->setTitle(pht('Blog Moved'))
-        ->setUser($user)
+        ->setUser($viewer)
         ->appendParagraph(pht('This blog is now hosted here:'))
         ->appendParagraph(
           phutil_tag(
@@ -55,7 +53,8 @@ final class PhameBlogLiveController extends PhameController {
     }
 
     $phame_request = clone $request;
-    $phame_request->setPath('/'.ltrim($this->more, '/'));
+    $more = $phame_request->getURIData('more', '');
+    $phame_request->setPath('/'.ltrim($more, '/'));
 
     $uri = $blog->getLiveURI();
 

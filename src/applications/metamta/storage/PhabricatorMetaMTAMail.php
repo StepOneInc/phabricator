@@ -3,38 +3,64 @@
 /**
  * @task recipients   Managing Recipients
  */
-final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
-
-  const STATUS_QUEUE = 'queued';
-  const STATUS_SENT  = 'sent';
-  const STATUS_FAIL  = 'fail';
-  const STATUS_VOID  = 'void';
+final class PhabricatorMetaMTAMail
+  extends PhabricatorMetaMTADAO
+  implements PhabricatorPolicyInterface {
 
   const RETRY_DELAY   = 5;
 
-  protected $parameters;
+  protected $actorPHID;
+  protected $parameters = array();
   protected $status;
   protected $message;
   protected $relatedPHID;
 
-  private $excludePHIDs = array();
-  private $overrideNoSelfMail = false;
   private $recipientExpansionMap;
+  private $routingMap;
 
   public function __construct() {
 
-    $this->status     = self::STATUS_QUEUE;
-    $this->parameters = array();
+    $this->status     = PhabricatorMailOutboundStatus::STATUS_QUEUE;
+    $this->parameters = array('sensitive' => true);
 
     parent::__construct();
   }
 
-  public function getConfiguration() {
+  protected function getConfiguration() {
     return array(
+      self::CONFIG_AUX_PHID => true,
       self::CONFIG_SERIALIZATION => array(
         'parameters'  => self::SERIALIZATION_JSON,
       ),
+      self::CONFIG_COLUMN_SCHEMA => array(
+        'actorPHID' => 'phid?',
+        'status' => 'text32',
+        'relatedPHID' => 'phid?',
+
+        // T6203/NULLABILITY
+        // This should just be empty if there's no body.
+        'message' => 'text?',
+      ),
+      self::CONFIG_KEY_SCHEMA => array(
+        'status' => array(
+          'columns' => array('status'),
+        ),
+        'key_actorPHID' => array(
+          'columns' => array('actorPHID'),
+        ),
+        'relatedPHID' => array(
+          'columns' => array('relatedPHID'),
+        ),
+        'key_created' => array(
+          'columns' => array('dateCreated'),
+        ),
+      ),
     ) + parent::getConfiguration();
+  }
+
+  public function generatePHID() {
+    return PhabricatorPHID::generateNewPHID(
+      PhabricatorMetaMTAMailPHIDType::TYPECONST);
   }
 
   protected function setParam($param, $value) {
@@ -43,16 +69,21 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
   }
 
   protected function getParam($param, $default = null) {
+    // Some old mail was saved without parameters because no parameters were
+    // set or encoding failed. Recover in these cases so we can perform
+    // mail migrations, see T9251.
+    if (!is_array($this->parameters)) {
+      $this->parameters = array();
+    }
+
     return idx($this->parameters, $param, $default);
   }
 
   /**
-   * Set tags (@{class:MetaMTANotificationType} constants) which identify the
-   * content of this mail in a general way. These tags are used to allow users
-   * to opt out of receiving certain types of mail, like updates when a task's
-   * projects change.
+   * These tags are used to allow users to opt out of receiving certain types
+   * of mail, like updates when a task's projects change.
    *
-   * @param list<const> List of @{class:MetaMTANotificationType} constants.
+   * @param list<const>
    * @return this
    */
   public function setMailTags(array $tags) {
@@ -96,6 +127,15 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
   }
 
   public function addRawTos(array $raw_email) {
+
+    // Strip addresses down to bare emails, since the MailAdapter API currently
+    // requires we pass it just the address (like `alincoln@logcabin.org`), not
+    // a full string like `"Abraham Lincoln" <alincoln@logcabin.org>`.
+    foreach ($raw_email as $key => $email) {
+      $object = new PhutilEmailAddress($email);
+      $raw_email[$key] = $object->getAddress();
+    }
+
     $this->setParam('raw-to', $raw_email);
     return $this;
   }
@@ -106,21 +146,22 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
     return $this;
   }
 
-  public function setExcludeMailRecipientPHIDs($exclude) {
-    $this->excludePHIDs = $exclude;
+  public function setExcludeMailRecipientPHIDs(array $exclude) {
+    $this->setParam('exclude', $exclude);
     return $this;
   }
+
   private function getExcludeMailRecipientPHIDs() {
-    return $this->excludePHIDs;
+    return $this->getParam('exclude', array());
   }
 
-  public function getOverrideNoSelfMailPreference() {
-    return $this->overrideNoSelfMail;
-  }
-
-  public function setOverrideNoSelfMailPreference($override) {
-    $this->overrideNoSelfMail = $override;
+  public function setForceHeraldMailRecipientPHIDs(array $force) {
+    $this->setParam('herald-force-recipients', $force);
     return $this;
+  }
+
+  private function getForceHeraldMailRecipientPHIDs() {
+    return $this->getParam('herald-force-recipients', array());
   }
 
   public function getTranslation(array $objects) {
@@ -151,6 +192,7 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
   }
 
   public function addPHIDHeaders($name, array $phids) {
+    $phids = array_unique($phids);
     foreach ($phids as $phid) {
       $this->addHeader($name, '<'.$phid.'>');
     }
@@ -185,6 +227,16 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
 
   public function setFrom($from) {
     $this->setParam('from', $from);
+    $this->setActorPHID($from);
+    return $this;
+  }
+
+  public function getFrom() {
+    return $this->getParam('from');
+  }
+
+  public function setRawFrom($raw_email, $raw_name) {
+    $this->setParam('raw-from', array($raw_email, $raw_name));
     return $this;
   }
 
@@ -213,13 +265,26 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
     return $this;
   }
 
+  public function setSensitiveContent($bool) {
+    $this->setParam('sensitive', $bool);
+    return $this;
+  }
+
+  public function hasSensitiveContent() {
+    return $this->getParam('sensitive', true);
+  }
+
+  public function setHTMLBody($html) {
+    $this->setParam('html-body', $html);
+    return $this;
+  }
+
   public function getBody() {
     return $this->getParam('body');
   }
 
-  public function setIsHTML($html) {
-    $this->setParam('is-html', $html);
-    return $this;
+  public function getHTMLBody() {
+    return $this->getParam('html-body');
   }
 
   public function setIsErrorEmail($is_error) {
@@ -241,6 +306,25 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
 
   public function getCcPHIDs() {
     return $this->getParam('cc', array());
+  }
+
+  /**
+   * Force delivery of a message, even if recipients have preferences which
+   * would otherwise drop the message.
+   *
+   * This is primarily intended to let users who don't want any email still
+   * receive things like password resets.
+   *
+   * @param bool  True to force delivery despite user preferences.
+   * @return this
+   */
+  public function setForceDelivery($force) {
+    $this->setParam('force', $force);
+    return $this;
+  }
+
+  public function getForceDelivery() {
+    return $this->getParam('force', false);
   }
 
   /**
@@ -294,14 +378,31 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
     // method.
 
     $this->openTransaction();
-      // Save to generate a task ID.
+      // Save to generate a mail ID and PHID.
       $result = parent::save();
+
+      // Write the recipient edges.
+      $editor = new PhabricatorEdgeEditor();
+      $edge_type = PhabricatorMetaMTAMailHasRecipientEdgeType::EDGECONST;
+      $recipient_phids = array_merge(
+        $this->getToPHIDs(),
+        $this->getCcPHIDs());
+      $expanded_phids = $this->expandRecipients($recipient_phids);
+      $all_phids = array_unique(array_merge(
+        $recipient_phids,
+        $expanded_phids));
+      foreach ($all_phids as $curr_phid) {
+        $editor->addEdge($this->getPHID(), $edge_type, $curr_phid);
+      }
+      $editor->save();
 
       // Queue a task to send this mail.
       $mailer_task = PhabricatorWorker::scheduleTask(
         'PhabricatorMetaMTAWorker',
         $this->getID(),
-        PhabricatorWorker::PRIORITY_ALERTS);
+        array(
+          'priority' => PhabricatorWorker::PRIORITY_ALERTS,
+        ));
 
     $this->saveTransaction();
 
@@ -332,12 +433,14 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
     }
 
     if (!$force_send) {
-      if ($this->getStatus() != self::STATUS_QUEUE) {
-        throw new Exception('Trying to send an already-sent mail!');
+      if ($this->getStatus() != PhabricatorMailOutboundStatus::STATUS_QUEUE) {
+        throw new Exception(pht('Trying to send an already-sent mail!'));
       }
     }
 
     try {
+      $headers = $this->generateHeaders();
+
       $params = $this->parameters;
 
       $actors = $this->loadAllActors();
@@ -359,8 +462,38 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
       $add_cc = array();
       $add_to = array();
 
+      // Only try to use preferences if everything is multiplexed, so we
+      // get consistent behavior.
+      $use_prefs = self::shouldMultiplexAllMail();
+
+      $prefs = null;
+      if ($use_prefs) {
+
+        // If multiplexing is enabled, some recipients will be in "Cc"
+        // rather than "To". We'll move them to "To" later (or supply a
+        // dummy "To") but need to look for the recipient in either the
+        // "To" or "Cc" fields here.
+        $target_phid = head(idx($params, 'to', array()));
+        if (!$target_phid) {
+          $target_phid = head(idx($params, 'cc', array()));
+        }
+
+        if ($target_phid) {
+          $user = id(new PhabricatorUser())->loadOneWhere(
+            'phid = %s',
+            $target_phid);
+          if ($user) {
+            $prefs = $user->loadPreferences();
+          }
+        }
+      }
+
       foreach ($params as $key => $value) {
         switch ($key) {
+          case 'raw-from':
+            list($from_email, $from_name) = $value;
+            $mailer->setFrom($from_email, $from_name);
+            break;
           case 'from':
             $from = $value;
             $actor_email = null;
@@ -407,16 +540,6 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
               $add_cc,
               mpull($cc_actors, 'getEmailAddress'));
             break;
-          case 'headers':
-            foreach ($value as $pair) {
-              list($header_key, $header_value) = $pair;
-
-              // NOTE: If we have \n in a header, SES rejects the email.
-              $header_value = str_replace("\n", ' ', $header_value);
-
-              $mailer->addHeader($header_key, $header_value);
-            }
-            break;
           case 'attachments':
             $value = $this->getAttachments();
             foreach ($value as $attachment) {
@@ -426,42 +549,7 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
                 $attachment->getMimeType());
             }
             break;
-          case 'body':
-            $max = PhabricatorEnv::getEnvConfig('metamta.email-body-limit');
-            if (strlen($value) > $max) {
-              $value = phutil_utf8_shorten($value, $max);
-              $value .= "\n";
-              $value .= pht('(This email was truncated at %d bytes.)', $max);
-            }
-            $mailer->setBody($value);
-            break;
           case 'subject':
-            // Only try to use preferences if everything is multiplexed, so we
-            // get consistent behavior.
-            $use_prefs = self::shouldMultiplexAllMail();
-
-            $prefs = null;
-            if ($use_prefs) {
-
-              // If multiplexing is enabled, some recipients will be in "Cc"
-              // rather than "To". We'll move them to "To" later (or supply a
-              // dummy "To") but need to look for the recipient in either the
-              // "To" or "Cc" fields here.
-              $target_phid = head(idx($params, 'to', array()));
-              if (!$target_phid) {
-                $target_phid = head(idx($params, 'cc', array()));
-              }
-
-              if ($target_phid) {
-                $user = id(new PhabricatorUser())->loadOneWhere(
-                  'phid = %s',
-                  $target_phid);
-                if ($user) {
-                  $prefs = $user->loadPreferences();
-                }
-              }
-            }
-
             $subject = array();
 
             if ($is_threaded) {
@@ -500,18 +588,6 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
 
             $mailer->setSubject(implode(' ', array_filter($subject)));
             break;
-          case 'is-html':
-            if ($value) {
-              $mailer->setIsHTML(true);
-            }
-            break;
-          case 'is-bulk':
-            if ($value) {
-              if (PhabricatorEnv::getEnvConfig('metamta.precedence-bulk')) {
-                $mailer->addHeader('Precedence', 'bulk');
-              }
-            }
-            break;
           case 'thread-id':
 
             // NOTE: Gmail freaks out about In-Reply-To and References which
@@ -522,7 +598,7 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
             $value = '<'.$value.'@'.$domain.'>';
 
             if ($is_first && $mailer->supportsMessageIDHeader()) {
-              $mailer->addHeader('Message-ID',  $value);
+              $headers[] = array('Message-ID',  $value);
             } else {
               $in_reply_to = $value;
               $references = array($value);
@@ -534,36 +610,76 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
                 $references[] = $parent_id;
               }
               $references = implode(' ', $references);
-              $mailer->addHeader('In-Reply-To', $in_reply_to);
-              $mailer->addHeader('References',  $references);
+              $headers[] = array('In-Reply-To', $in_reply_to);
+              $headers[] = array('References',  $references);
             }
             $thread_index = $this->generateThreadIndex($value, $is_first);
-            $mailer->addHeader('Thread-Index', $thread_index);
-            break;
-          case 'mailtags':
-            // Handled below.
-            break;
-          case 'subject-prefix':
-          case 'vary-subject-prefix':
-            // Handled above.
+            $headers[] = array('Thread-Index', $thread_index);
             break;
           default:
-            // Just discard.
+            // Other parameters are handled elsewhere or are not relevant to
+            // constructing the message.
+            break;
         }
       }
 
+      $body = idx($params, 'body', '');
+      $max = PhabricatorEnv::getEnvConfig('metamta.email-body-limit');
+      if (strlen($body) > $max) {
+        $body = id(new PhutilUTF8StringTruncator())
+          ->setMaximumBytes($max)
+          ->truncateString($body);
+        $body .= "\n";
+        $body .= pht('(This email was truncated at %d bytes.)', $max);
+      }
+      $mailer->setBody($body);
+
+      $html_emails = false;
+      if ($use_prefs && $prefs) {
+        $html_emails = $prefs->getPreference(
+          PhabricatorUserPreferences::PREFERENCE_HTML_EMAILS,
+          $html_emails);
+      }
+
+      if ($html_emails && isset($params['html-body'])) {
+        $mailer->setHTMLBody($params['html-body']);
+      }
+
+      // Pass the headers to the mailer, then save the state so we can show
+      // them in the web UI.
+      foreach ($headers as $header) {
+        list($header_key, $header_value) = $header;
+        $mailer->addHeader($header_key, $header_value);
+      }
+      $this->setParam('headers.sent', $headers);
+
+      // Save the final deliverability outcomes and reasoning so we can
+      // explain why things happened the way they did.
+      $actor_list = array();
+      foreach ($actors as $actor) {
+        $actor_list[$actor->getPHID()] = array(
+          'deliverable' => $actor->isDeliverable(),
+          'reasons' => $actor->getDeliverabilityReasons(),
+        );
+      }
+      $this->setParam('actors.sent', $actor_list);
+
+      $this->setParam('routing.sent', $this->getParam('routing'));
+      $this->setParam('routingmap.sent', $this->getRoutingRuleMap());
+
       if (!$add_to && !$add_cc) {
-        $this->setStatus(self::STATUS_VOID);
+        $this->setStatus(PhabricatorMailOutboundStatus::STATUS_VOID);
         $this->setMessage(
-          'Message has no valid recipients: all To/Cc are disabled, invalid, '.
-          'or configured not to receive this mail.');
+          pht(
+            'Message has no valid recipients: all To/Cc are disabled, '.
+            'invalid, or configured not to receive this mail.'));
         return $this->save();
       }
 
       if ($this->getIsErrorEmail()) {
         $all_recipients = array_merge($add_to, $add_cc);
         if ($this->shouldRateLimitMail($all_recipients)) {
-          $this->setStatus(self::STATUS_VOID);
+          $this->setStatus(PhabricatorMailOutboundStatus::STATUS_VOID);
           $this->setMessage(
             pht(
               'This is an error email, but one or more recipients have '.
@@ -573,22 +689,14 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
         }
       }
 
-      $mailer->addHeader('X-Phabricator-Sent-This-Message', 'Yes');
-      $mailer->addHeader('X-Mail-Transport-Agent', 'MetaMTA');
-
-      // Some clients respect this to suppress OOF and other auto-responses.
-      $mailer->addHeader('X-Auto-Response-Suppress', 'All');
-
-      // If the message has mailtags, filter out any recipients who don't want
-      // to receive this type of mail.
-      $mailtags = $this->getParam('mailtags');
-      if ($mailtags) {
-        $tag_header = array();
-        foreach ($mailtags as $mailtag) {
-          $tag_header[] = '<'.$mailtag.'>';
-        }
-        $tag_header = implode(', ', $tag_header);
-        $mailer->addHeader('X-Phabricator-Mail-Tags', $tag_header);
+      if (PhabricatorEnv::getEnvConfig('phabricator.silent')) {
+        $this->setStatus(PhabricatorMailOutboundStatus::STATUS_VOID);
+        $this->setMessage(
+          pht(
+            'Phabricator is running in silent mode. See `%s` '.
+            'in the configuration to change this setting.',
+            'phabricator.silent'));
+        return $this->save();
       }
 
       // Some mailers require a valid "To:" in order to deliver mail. If we
@@ -614,7 +722,7 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
       }
     } catch (Exception $ex) {
       $this
-        ->setStatus(self::STATUS_FAIL)
+        ->setStatus(PhabricatorMailOutboundStatus::STATUS_FAIL)
         ->setMessage($ex->getMessage())
         ->save();
 
@@ -630,13 +738,13 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
           pht('Mail adapter encountered an unexpected, unspecified failure.'));
       }
 
-      $this->setStatus(self::STATUS_SENT);
+      $this->setStatus(PhabricatorMailOutboundStatus::STATUS_SENT);
       $this->save();
 
       return $this;
     } catch (PhabricatorMetaMTAPermanentFailureException $ex) {
       $this
-        ->setStatus(self::STATUS_FAIL)
+        ->setStatus(PhabricatorMailOutboundStatus::STATUS_FAIL)
         ->setMessage($ex->getMessage())
         ->save();
 
@@ -648,17 +756,6 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
 
       throw $ex;
     }
-  }
-
-  public static function getReadableStatus($status_code) {
-    static $readable = array(
-      self::STATUS_QUEUE => 'Queued for Delivery',
-      self::STATUS_FAIL  => 'Delivery Failed',
-      self::STATUS_SENT  => 'Sent',
-      self::STATUS_VOID  => 'Void',
-    );
-    $status_code = coalesce($status_code, '?');
-    return idx($readable, $status_code, $status_code);
   }
 
   private function generateThreadIndex($seed, $is_first_mail) {
@@ -704,40 +801,34 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
    * Get all of the recipients for this mail, after preference filters are
    * applied. This list has all objects to whom delivery will be attempted.
    *
+   * Note that this expands recipients into their members, because delivery
+   * is never directly attempted to aggregate actors like projects.
+   *
    * @return  list<phid>  A list of all recipients to whom delivery will be
    *                      attempted.
    * @task recipients
    */
   public function buildRecipientList() {
-    $actors = $this->loadActors(
-      array_merge(
-        $this->getToPHIDs(),
-        $this->getCcPHIDs()));
+    $actors = $this->loadAllActors();
     $actors = $this->filterDeliverableActors($actors);
     return mpull($actors, 'getPHID');
   }
 
   public function loadAllActors() {
-    $actor_phids = array_merge(
-      array($this->getParam('from')),
-      $this->getToPHIDs(),
-      $this->getCcPHIDs());
-
-    $this->loadRecipientExpansions($actor_phids);
-    $actor_phids = $this->expandRecipients($actor_phids);
-
+    $actor_phids = $this->getExpandedRecipientPHIDs();
     return $this->loadActors($actor_phids);
   }
 
-  private function loadRecipientExpansions(array $phids) {
-    $expansions = id(new PhabricatorMetaMTAMemberQuery())
-      ->setViewer(PhabricatorUser::getOmnipotentUser())
-      ->withPHIDs($phids)
-      ->execute();
+  public function getExpandedRecipientPHIDs() {
+    $actor_phids = $this->getAllActorPHIDs();
+    return $this->expandRecipients($actor_phids);
+  }
 
-    $this->recipientExpansionMap = $expansions;
-
-    return $this;
+  private function getAllActorPHIDs() {
+    return array_merge(
+      array($this->getParam('from')),
+      $this->getToPHIDs(),
+      $this->getCcPHIDs());
   }
 
   /**
@@ -752,19 +843,17 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
    */
   private function expandRecipients(array $phids) {
     if ($this->recipientExpansionMap === null) {
-      throw new Exception(
-        pht(
-          'Call loadRecipientExpansions() before expandRecipients()!'));
+      $all_phids = $this->getAllActorPHIDs();
+      $this->recipientExpansionMap = id(new PhabricatorMetaMTAMemberQuery())
+        ->setViewer(PhabricatorUser::getOmnipotentUser())
+        ->withPHIDs($all_phids)
+        ->execute();
     }
 
     $results = array();
     foreach ($phids as $phid) {
-      if (!isset($this->recipientExpansionMap[$phid])) {
-        $results[$phid] = $phid;
-      } else {
-        foreach ($this->recipientExpansionMap[$phid] as $recipient_phid) {
-          $results[$recipient_phid] = $recipient_phid;
-        }
+      foreach ($this->recipientExpansionMap[$phid] as $recipient_phid) {
+        $results[$recipient_phid] = $recipient_phid;
       }
     }
 
@@ -795,20 +884,41 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
       return array();
     }
 
+    if ($this->getForceDelivery()) {
+      // If we're forcing delivery, skip all the opt-out checks. We don't
+      // bother annotating reasoning on the mail in this case because it should
+      // always be obvious why the mail hit this rule (e.g., it is a password
+      // reset mail).
+      foreach ($actors as $actor) {
+        $actor->setDeliverable(PhabricatorMetaMTAActor::REASON_FORCE);
+      }
+      return $actors;
+    }
+
     // Exclude explicit recipients.
     foreach ($this->getExcludeMailRecipientPHIDs() as $phid) {
       $actor = idx($actors, $phid);
       if (!$actor) {
         continue;
       }
-      $actor->setUndeliverable(
-        pht(
-          'This message is a response to another email message, and this '.
-          'recipient received the original email message, so we are not '.
-          'sending them this substantially similar message (for example, '.
-          'the sender used "Reply All" instead of "Reply" in response to '.
-          'mail from Phabricator).'));
+      $actor->setUndeliverable(PhabricatorMetaMTAActor::REASON_RESPONSE);
     }
+
+    // Before running more rules, save a list of the actors who were
+    // deliverable before we started running preference-based rules. This stops
+    // us from trying to send mail to disabled users just because a Herald rule
+    // added them, for example.
+    $deliverable = array();
+    foreach ($actors as $phid => $actor) {
+      if ($actor->isDeliverable()) {
+        $deliverable[] = $phid;
+      }
+    }
+
+    // For the rest of the rules, order matters. We're going to run all the
+    // possible rules in order from weakest to strongest, and let the strongest
+    // matching rule win. The weaker rules leave annotations behind which help
+    // users understand why the mail was routed the way it was.
 
     // Exclude the actor if their preferences are set.
     $from_phid = $this->getParam('from');
@@ -819,33 +929,29 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
         ->withPHIDs(array($from_phid))
         ->execute();
       $from_user = head($from_user);
-      if ($from_user && !$this->getOverrideNoSelfMailPreference()) {
+      if ($from_user) {
         $pref_key = PhabricatorUserPreferences::PREFERENCE_NO_SELF_MAIL;
         $exclude_self = $from_user
           ->loadPreferences()
           ->getPreference($pref_key);
         if ($exclude_self) {
-          $from_actor->setUndeliverable(
-            pht(
-              'This recipient is the user whose actions caused delivery of '.
-              'this message, but they have set preferences so they do not '.
-              'receive mail about their own actions (Settings > Email '.
-              'Preferences > Self Actions).'));
+          $from_actor->setUndeliverable(PhabricatorMetaMTAActor::REASON_SELF);
         }
       }
     }
 
+    $all_prefs = id(new PhabricatorUserPreferences())->loadAllWhere(
+      'userPHID in (%Ls)',
+      $actor_phids);
+    $all_prefs = mpull($all_prefs, null, 'getUserPHID');
+
+    $value_email = PhabricatorUserPreferences::MAILTAG_PREFERENCE_EMAIL;
 
     // Exclude all recipients who have set preferences to not receive this type
     // of email (for example, a user who says they don't want emails about task
     // CC changes).
     $tags = $this->getParam('mailtags');
     if ($tags) {
-      $all_prefs = id(new PhabricatorUserPreferences())->loadAllWhere(
-        'userPHID in (%Ls)',
-        $actor_phids);
-      $all_prefs = mpull($all_prefs, null, 'getUserPHID');
-
       foreach ($all_prefs as $phid => $prefs) {
         $user_mailtags = $prefs->getPreference(
           PhabricatorUserPreferences::PREFERENCE_MAILTAGS,
@@ -855,7 +961,7 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
         // of the mailtags.
         $send = false;
         foreach ($tags as $tag) {
-          if (idx($user_mailtags, $tag, true)) {
+          if (((int)idx($user_mailtags, $tag, $value_email)) == $value_email) {
             $send = true;
             break;
           }
@@ -863,11 +969,51 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
 
         if (!$send) {
           $actors[$phid]->setUndeliverable(
-            pht(
-              'This mail has tags which control which users receive it, and '.
-              'this recipient has not elected to receive mail with any of '.
-              'the tags on this message (Settings > Email Preferences).'));
+            PhabricatorMetaMTAActor::REASON_MAILTAGS);
         }
+      }
+    }
+
+    foreach ($deliverable as $phid) {
+      switch ($this->getRoutingRule($phid)) {
+        case PhabricatorMailRoutingRule::ROUTE_AS_NOTIFICATION:
+          $actors[$phid]->setUndeliverable(
+            PhabricatorMetaMTAActor::REASON_ROUTE_AS_NOTIFICATION);
+          break;
+        case PhabricatorMailRoutingRule::ROUTE_AS_MAIL:
+          $actors[$phid]->setDeliverable(
+            PhabricatorMetaMTAActor::REASON_ROUTE_AS_MAIL);
+          break;
+        default:
+          // No change.
+          break;
+      }
+    }
+
+    // If recipients were initially deliverable and were added by "Send me an
+    // email" Herald rules, annotate them as such and make them deliverable
+    // again, overriding any changes made by the "self mail" and "mail tags"
+    // settings.
+    $force_recipients = $this->getForceHeraldMailRecipientPHIDs();
+    $force_recipients = array_fuse($force_recipients);
+    if ($force_recipients) {
+      foreach ($deliverable as $phid) {
+        if (isset($force_recipients[$phid])) {
+          $actors[$phid]->setDeliverable(
+            PhabricatorMetaMTAActor::REASON_FORCE_HERALD);
+        }
+      }
+    }
+
+    // Exclude recipients who don't want any mail. This rule is very strong
+    // and runs last.
+    foreach ($all_prefs as $phid => $prefs) {
+      $exclude = $prefs->getPreference(
+        PhabricatorUserPreferences::PREFERENCE_NO_MAIL,
+        false);
+      if ($exclude) {
+        $actors[$phid]->setUndeliverable(
+          PhabricatorMetaMTAActor::REASON_MAIL_DISABLED);
       }
     }
 
@@ -884,6 +1030,166 @@ final class PhabricatorMetaMTAMail extends PhabricatorMetaMTADAO {
     } catch (PhabricatorSystemActionRateLimitException $ex) {
       return true;
     }
+  }
+
+  public function delete() {
+    $this->openTransaction();
+      queryfx(
+        $this->establishConnection('w'),
+        'DELETE FROM %T WHERE src = %s AND type = %d',
+        PhabricatorEdgeConfig::TABLE_NAME_EDGE,
+        $this->getPHID(),
+        PhabricatorMetaMTAMailHasRecipientEdgeType::EDGECONST);
+      $ret = parent::delete();
+    $this->saveTransaction();
+
+    return $ret;
+  }
+
+  public function generateHeaders() {
+    $headers = array();
+
+    $headers[] = array('X-Phabricator-Sent-This-Message', 'Yes');
+    $headers[] = array('X-Mail-Transport-Agent', 'MetaMTA');
+
+    // Some clients respect this to suppress OOF and other auto-responses.
+    $headers[] = array('X-Auto-Response-Suppress', 'All');
+
+    // If the message has mailtags, filter out any recipients who don't want
+    // to receive this type of mail.
+    $mailtags = $this->getParam('mailtags');
+    if ($mailtags) {
+      $tag_header = array();
+      foreach ($mailtags as $mailtag) {
+        $tag_header[] = '<'.$mailtag.'>';
+      }
+      $tag_header = implode(', ', $tag_header);
+      $headers[] = array('X-Phabricator-Mail-Tags', $tag_header);
+    }
+
+    $value = $this->getParam('headers', array());
+    foreach ($value as $pair) {
+      list($header_key, $header_value) = $pair;
+
+      // NOTE: If we have \n in a header, SES rejects the email.
+      $header_value = str_replace("\n", ' ', $header_value);
+      $headers[] = array($header_key, $header_value);
+    }
+
+    $is_bulk = $this->getParam('is-bulk');
+    if ($is_bulk) {
+      $headers[] = array('Precedence', 'bulk');
+    }
+
+    return $headers;
+  }
+
+  public function getDeliveredHeaders() {
+    return $this->getParam('headers.sent');
+  }
+
+  public function getDeliveredActors() {
+    return $this->getParam('actors.sent');
+  }
+
+  public function getDeliveredRoutingRules() {
+    return $this->getParam('routing.sent');
+  }
+
+  public function getDeliveredRoutingMap() {
+    return $this->getParam('routingmap.sent');
+  }
+
+
+/* -(  Routing  )------------------------------------------------------------ */
+
+
+  public function addRoutingRule($routing_rule, $phids, $reason_phid) {
+    $routing = $this->getParam('routing', array());
+    $routing[] = array(
+      'routingRule' => $routing_rule,
+      'phids' => $phids,
+      'reasonPHID' => $reason_phid,
+    );
+    $this->setParam('routing', $routing);
+
+    // Throw the routing map away so we rebuild it.
+    $this->routingMap = null;
+
+    return $this;
+  }
+
+  private function getRoutingRule($phid) {
+    $map = $this->getRoutingRuleMap();
+
+    $info = idx($map, $phid, idx($map, 'default'));
+    if ($info) {
+      return idx($info, 'rule');
+    }
+
+    return null;
+  }
+
+  private function getRoutingRuleMap() {
+    if ($this->routingMap === null) {
+      $map = array();
+
+      $routing = $this->getParam('routing', array());
+      foreach ($routing as $route) {
+        $phids = $route['phids'];
+        if ($phids === null) {
+          $phids = array('default');
+        }
+
+        foreach ($phids as $phid) {
+          $new_rule = $route['routingRule'];
+
+          $current_rule = idx($map, $phid);
+          if ($current_rule === null) {
+            $is_stronger = true;
+          } else {
+            $is_stronger = PhabricatorMailRoutingRule::isStrongerThan(
+              $new_rule,
+              $current_rule);
+          }
+
+          if ($is_stronger) {
+            $map[$phid] = array(
+              'rule' => $new_rule,
+              'reason' => $route['reasonPHID'],
+            );
+          }
+        }
+      }
+
+      $this->routingMap = $map;
+    }
+
+    return $this->routingMap;
+  }
+
+
+/* -(  PhabricatorPolicyInterface  )----------------------------------------- */
+
+
+  public function getCapabilities() {
+    return array(
+      PhabricatorPolicyCapability::CAN_VIEW,
+    );
+  }
+
+  public function getPolicy($capability) {
+    return PhabricatorPolicies::POLICY_NOONE;
+  }
+
+  public function hasAutomaticCapability($capability, PhabricatorUser $viewer) {
+    $actor_phids = $this->getExpandedRecipientPHIDs();
+    return in_array($viewer->getPHID(), $actor_phids);
+  }
+
+  public function describeAutomaticCapability($capability) {
+    return pht(
+      'The mail sender and message recipients can always see the mail.');
   }
 
 

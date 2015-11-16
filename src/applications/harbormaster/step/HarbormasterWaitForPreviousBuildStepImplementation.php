@@ -13,6 +13,10 @@ final class HarbormasterWaitForPreviousBuildStepImplementation
       'before continuing.');
   }
 
+  public function getBuildStepGroupKey() {
+    return HarbormasterPrototypeBuildStepGroup::GROUPKEY;
+  }
+
   public function execute(
     HarbormasterBuild $build,
     HarbormasterBuildTarget $build_target) {
@@ -28,14 +32,23 @@ final class HarbormasterWaitForPreviousBuildStepImplementation
     // finished.
     $plan = $build->getBuildPlan();
 
-    $log = $build->createLog($build_target, 'waiting', 'blockers');
-    $log_start = $log->start();
+    $existing_logs = id(new HarbormasterBuildLogQuery())
+      ->setViewer(PhabricatorUser::getOmnipotentUser())
+      ->withBuildTargetPHIDs(array($build_target->getPHID()))
+      ->execute();
+
+    if ($existing_logs) {
+      $log = head($existing_logs);
+    } else {
+      $log = $build->createLog($build_target, 'waiting', 'blockers');
+    }
 
     $blockers = $this->getBlockers($object, $plan, $build);
     if ($blockers) {
-      $log->append("Blocked by: ".implode(',', $blockers)."\n");
+      $log->start();
+      $log->append(pht("Blocked by: %s\n", implode(',', $blockers)));
+      $log->finalize();
     }
-    $log->finalize($log_start);
 
     if ($blockers) {
       throw new PhabricatorWorkerYieldException(15);
@@ -51,7 +64,7 @@ final class HarbormasterWaitForPreviousBuildStepImplementation
       'diffusion.commitparentsquery',
       array(
         'commit'   => $commit->getCommitIdentifier(),
-        'callsign' => $commit->getRepository()->getCallsign()
+        'callsign' => $commit->getRepository()->getCallsign(),
       ));
     $call->setUser(PhabricatorUser::getOmnipotentUser());
     $parents = $call->execute();

@@ -4,23 +4,42 @@
  * A collection of dashboard panels with a specific layout.
  */
 final class PhabricatorDashboard extends PhabricatorDashboardDAO
-  implements PhabricatorPolicyInterface {
+  implements
+    PhabricatorApplicationTransactionInterface,
+    PhabricatorPolicyInterface,
+    PhabricatorFlaggableInterface,
+    PhabricatorDestructibleInterface,
+    PhabricatorProjectInterface {
 
   protected $name;
   protected $viewPolicy;
   protected $editPolicy;
+  protected $status;
   protected $layoutConfig = array();
+
+  const STATUS_ACTIVE = 'active';
+  const STATUS_ARCHIVED = 'archived';
 
   private $panelPHIDs = self::ATTACHABLE;
   private $panels = self::ATTACHABLE;
+  private $edgeProjectPHIDs = self::ATTACHABLE;
+
 
   public static function initializeNewDashboard(PhabricatorUser $actor) {
     return id(new PhabricatorDashboard())
       ->setName('')
       ->setViewPolicy(PhabricatorPolicies::POLICY_USER)
       ->setEditPolicy($actor->getPHID())
+      ->setStatus(self::STATUS_ACTIVE)
       ->attachPanels(array())
       ->attachPanelPHIDs(array());
+  }
+
+  public static function getStatusNameMap() {
+    return array(
+      self::STATUS_ACTIVE => pht('Active'),
+      self::STATUS_ARCHIVED => pht('Archived'),
+    );
   }
 
   public static function copyDashboard(
@@ -33,11 +52,16 @@ final class PhabricatorDashboard extends PhabricatorDashboardDAO
     return $dst;
   }
 
-  public function getConfiguration() {
+  protected function getConfiguration() {
     return array(
       self::CONFIG_AUX_PHID => true,
       self::CONFIG_SERIALIZATION => array(
-        'layoutConfig' => self::SERIALIZATION_JSON),
+        'layoutConfig' => self::SERIALIZATION_JSON,
+      ),
+      self::CONFIG_COLUMN_SCHEMA => array(
+        'name' => 'text255',
+        'status' => 'text32',
+      ),
     ) + parent::getConfiguration();
   }
 
@@ -54,6 +78,15 @@ final class PhabricatorDashboard extends PhabricatorDashboardDAO
   public function setLayoutConfigFromObject(
     PhabricatorDashboardLayoutConfig $object) {
     $this->setLayoutConfig($object->toDictionary());
+    return $this;
+  }
+
+  public function getProjectPHIDs() {
+    return $this->assertAttached($this->edgeProjectPHIDs);
+  }
+
+  public function attachProjectPHIDs(array $phids) {
+    $this->edgeProjectPHIDs = $phids;
     return $this;
   }
 
@@ -74,6 +107,33 @@ final class PhabricatorDashboard extends PhabricatorDashboardDAO
 
   public function getPanels() {
     return $this->assertAttached($this->panels);
+  }
+
+  public function isClosed() {
+    return ($this->getStatus() == self::STATUS_ARCHIVED);
+  }
+
+
+/* -(  PhabricatorApplicationTransactionInterface  )------------------------- */
+
+
+  public function getApplicationTransactionEditor() {
+    return new PhabricatorDashboardTransactionEditor();
+  }
+
+  public function getApplicationTransactionObject() {
+    return $this;
+  }
+
+  public function getApplicationTransactionTemplate() {
+    return new PhabricatorDashboardTransaction();
+  }
+
+  public function willRenderTimeline(
+    PhabricatorApplicationTransactionView $timeline,
+    AphrontRequest $request) {
+
+    return $timeline;
   }
 
 
@@ -103,5 +163,25 @@ final class PhabricatorDashboard extends PhabricatorDashboardDAO
   public function describeAutomaticCapability($capability) {
     return null;
   }
+
+
+/* -(  PhabricatorDestructibleInterface  )----------------------------------- */
+
+
+  public function destroyObjectPermanently(
+    PhabricatorDestructionEngine $engine) {
+
+    $this->openTransaction();
+      $installs = id(new PhabricatorDashboardInstall())->loadAllWhere(
+        'dashboardPHID = %s',
+        $this->getPHID());
+      foreach ($installs as $install) {
+        $install->delete();
+      }
+
+      $this->delete();
+    $this->saveTransaction();
+  }
+
 
 }

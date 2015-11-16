@@ -1,11 +1,17 @@
 <?php
 
 final class HarbormasterBuild extends HarbormasterDAO
-  implements PhabricatorPolicyInterface {
+  implements
+    PhabricatorApplicationTransactionInterface,
+    PhabricatorPolicyInterface {
 
   protected $buildablePHID;
   protected $buildPlanPHID;
   protected $buildStatus;
+  protected $buildGeneration;
+  protected $buildParameters = array();
+  protected $initiatorPHID;
+  protected $planAutoKey;
 
   private $buildable = self::ATTACHABLE;
   private $buildPlan = self::ATTACHABLE;
@@ -38,14 +44,19 @@ final class HarbormasterBuild extends HarbormasterDAO
   const STATUS_FAILED = 'failed';
 
   /**
+   * The build has aborted.
+   */
+  const STATUS_ABORTED = 'aborted';
+
+  /**
    * The build encountered an unexpected error.
    */
   const STATUS_ERROR = 'error';
 
   /**
-   * The build has been stopped.
+   * The build has been paused.
    */
-  const STATUS_STOPPED = 'stopped';
+  const STATUS_PAUSED = 'paused';
 
   /**
    * The build has been deadlocked.
@@ -71,10 +82,12 @@ final class HarbormasterBuild extends HarbormasterDAO
         return pht('Passed');
       case self::STATUS_FAILED:
         return pht('Failed');
+      case self::STATUS_ABORTED:
+        return pht('Aborted');
       case self::STATUS_ERROR:
         return pht('Unexpected Error');
-      case self::STATUS_STOPPED:
-        return pht('Stopped');
+      case self::STATUS_PAUSED:
+        return pht('Paused');
       case self::STATUS_DEADLOCKED:
         return pht('Deadlocked');
       default:
@@ -93,9 +106,11 @@ final class HarbormasterBuild extends HarbormasterDAO
         return PHUIStatusItemView::ICON_ACCEPT;
       case self::STATUS_FAILED:
         return PHUIStatusItemView::ICON_REJECT;
+      case self::STATUS_ABORTED:
+        return PHUIStatusItemView::ICON_MINUS;
       case self::STATUS_ERROR:
         return PHUIStatusItemView::ICON_MINUS;
-      case self::STATUS_STOPPED:
+      case self::STATUS_PAUSED:
         return PHUIStatusItemView::ICON_MINUS;
       case self::STATUS_DEADLOCKED:
         return PHUIStatusItemView::ICON_WARNING;
@@ -114,10 +129,11 @@ final class HarbormasterBuild extends HarbormasterDAO
       case self::STATUS_PASSED:
         return 'green';
       case self::STATUS_FAILED:
+      case self::STATUS_ABORTED:
       case self::STATUS_ERROR:
       case self::STATUS_DEADLOCKED:
         return 'red';
-      case self::STATUS_STOPPED:
+      case self::STATUS_PAUSED:
         return 'dark';
       default:
         return 'bluegrey';
@@ -126,7 +142,8 @@ final class HarbormasterBuild extends HarbormasterDAO
 
   public static function initializeNewBuild(PhabricatorUser $actor) {
     return id(new HarbormasterBuild())
-      ->setBuildStatus(self::STATUS_INACTIVE);
+      ->setBuildStatus(self::STATUS_INACTIVE)
+      ->setBuildGeneration(0);
   }
 
   public function delete() {
@@ -138,9 +155,33 @@ final class HarbormasterBuild extends HarbormasterDAO
     return $result;
   }
 
-  public function getConfiguration() {
+  protected function getConfiguration() {
     return array(
       self::CONFIG_AUX_PHID => true,
+      self::CONFIG_SERIALIZATION => array(
+        'buildParameters' => self::SERIALIZATION_JSON,
+      ),
+      self::CONFIG_COLUMN_SCHEMA => array(
+        'buildStatus' => 'text32',
+        'buildGeneration' => 'uint32',
+        'planAutoKey' => 'text32?',
+        'initiatorPHID' => 'phid?',
+      ),
+      self::CONFIG_KEY_SCHEMA => array(
+        'key_buildable' => array(
+          'columns' => array('buildablePHID'),
+        ),
+        'key_plan' => array(
+          'columns' => array('buildPlanPHID'),
+        ),
+        'key_status' => array(
+          'columns' => array('buildStatus'),
+        ),
+        'key_planautokey' => array(
+          'columns' => array('buildablePHID', 'planAutoKey'),
+          'unique' => true,
+        ),
+      ),
     ) + parent::getConfiguration();
   }
 
@@ -189,12 +230,18 @@ final class HarbormasterBuild extends HarbormasterDAO
       $this->getBuildStatus() === self::STATUS_BUILDING;
   }
 
+  public function isAutobuild() {
+    return ($this->getPlanAutoKey() !== null);
+  }
+
   public function createLog(
     HarbormasterBuildTarget $build_target,
     $log_source,
     $log_type) {
 
-    $log_source = phutil_utf8_shorten($log_source, 250);
+    $log_source = id(new PhutilUTF8StringTruncator())
+      ->setMaximumBytes(250)
+      ->truncateString($log_source);
 
     $log = HarbormasterBuildLog::initializeNewBuildLog($build_target)
       ->setLogSource($log_source)
@@ -204,43 +251,23 @@ final class HarbormasterBuild extends HarbormasterDAO
     return $log;
   }
 
-  public function createArtifact(
-    HarbormasterBuildTarget $build_target,
-    $artifact_key,
-    $artifact_type) {
-
-    $artifact =
-      HarbormasterBuildArtifact::initializeNewBuildArtifact($build_target);
-    $artifact->setArtifactKey($this->getPHID(), $artifact_key);
-    $artifact->setArtifactType($artifact_type);
-    $artifact->save();
-    return $artifact;
-  }
-
-  public function loadArtifact($name) {
-    $artifact = id(new HarbormasterBuildArtifactQuery())
-      ->setViewer(PhabricatorUser::getOmnipotentUser())
-      ->withArtifactKeys(
-        $this->getPHID(),
-        array($name))
-      ->executeOne();
-    if ($artifact === null) {
-      throw new Exception('Artifact not found!');
-    }
-    return $artifact;
-  }
-
   public function retrieveVariablesFromBuild() {
     $results = array(
       'buildable.diff' => null,
       'buildable.revision' => null,
       'buildable.commit' => null,
       'repository.callsign' => null,
+      'repository.phid' => null,
       'repository.vcs' => null,
       'repository.uri' => null,
       'step.timestamp' => null,
       'build.id' => null,
+      'initiator.phid' => null,
     );
+
+    foreach ($this->getBuildParameters() as $key => $value) {
+      $results['build/'.$key] = $value;
+    }
 
     $buildable = $this->getBuildable();
     $object = $buildable->getBuildableObject();
@@ -251,20 +278,24 @@ final class HarbormasterBuild extends HarbormasterDAO
 
     $results['step.timestamp'] = time();
     $results['build.id'] = $this->getID();
+    $results['initiator.phid'] = $this->getInitiatorPHID();
 
     return $results;
   }
 
   public static function getAvailableBuildVariables() {
-    $objects = id(new PhutilSymbolLoader())
+    $objects = id(new PhutilClassMapQuery())
       ->setAncestorClass('HarbormasterBuildableInterface')
-      ->loadObjects();
+      ->execute();
 
     $variables = array();
     $variables[] = array(
       'step.timestamp' => pht('The current UNIX timestamp.'),
       'build.id' => pht('The ID of the current build.'),
       'target.phid' => pht('The PHID of the current build target.'),
+      'initiator.phid' => pht(
+        'The PHID of the user or Object that initiated the build, '.
+        'if applicable.'),
     );
 
     foreach ($objects as $object) {
@@ -279,16 +310,17 @@ final class HarbormasterBuild extends HarbormasterDAO
     switch ($this->getBuildStatus()) {
       case self::STATUS_PASSED:
       case self::STATUS_FAILED:
+      case self::STATUS_ABORTED:
       case self::STATUS_ERROR:
-      case self::STATUS_STOPPED:
+      case self::STATUS_PAUSED:
         return true;
     }
 
     return false;
   }
 
-  public function isStopped() {
-    return ($this->getBuildStatus() == self::STATUS_STOPPED);
+  public function isPaused() {
+    return ($this->getBuildStatus() == self::STATUS_PAUSED);
   }
 
 
@@ -305,36 +337,59 @@ final class HarbormasterBuild extends HarbormasterDAO
   }
 
   public function canRestartBuild() {
+    if ($this->isAutobuild()) {
+      return false;
+    }
+
     return !$this->isRestarting();
   }
 
-  public function canStopBuild() {
+  public function canPauseBuild() {
+    if ($this->isAutobuild()) {
+      return false;
+    }
+
     return !$this->isComplete() &&
-           !$this->isStopped() &&
-           !$this->isStopping();
+           !$this->isPaused() &&
+           !$this->isPausing();
+  }
+
+  public function canAbortBuild() {
+    if ($this->isAutobuild()) {
+      return false;
+    }
+
+    return !$this->isComplete();
   }
 
   public function canResumeBuild() {
-    return $this->isStopped() &&
+    if ($this->isAutobuild()) {
+      return false;
+    }
+
+    return $this->isPaused() &&
            !$this->isResuming();
   }
 
-  public function isStopping() {
-    $is_stopping = false;
+  public function isPausing() {
+    $is_pausing = false;
     foreach ($this->getUnprocessedCommands() as $command_object) {
       $command = $command_object->getCommand();
       switch ($command) {
-        case HarbormasterBuildCommand::COMMAND_STOP:
-          $is_stopping = true;
+        case HarbormasterBuildCommand::COMMAND_PAUSE:
+          $is_pausing = true;
           break;
         case HarbormasterBuildCommand::COMMAND_RESUME:
         case HarbormasterBuildCommand::COMMAND_RESTART:
-          $is_stopping = false;
+          $is_pausing = false;
+          break;
+        case HarbormasterBuildCommand::COMMAND_ABORT:
+          $is_pausing = true;
           break;
       }
     }
 
-    return $is_stopping;
+    return $is_pausing;
   }
 
   public function isResuming() {
@@ -346,7 +401,10 @@ final class HarbormasterBuild extends HarbormasterDAO
         case HarbormasterBuildCommand::COMMAND_RESUME:
           $is_resuming = true;
           break;
-        case HarbormasterBuildCommand::COMMAND_STOP:
+        case HarbormasterBuildCommand::COMMAND_PAUSE:
+          $is_resuming = false;
+          break;
+        case HarbormasterBuildCommand::COMMAND_ABORT:
           $is_resuming = false;
           break;
       }
@@ -369,6 +427,20 @@ final class HarbormasterBuild extends HarbormasterDAO
     return $is_restarting;
   }
 
+  public function isAborting() {
+    $is_aborting = false;
+    foreach ($this->getUnprocessedCommands() as $command_object) {
+      $command = $command_object->getCommand();
+      switch ($command) {
+        case HarbormasterBuildCommand::COMMAND_ABORT:
+          $is_aborting = true;
+          break;
+      }
+    }
+
+    return $is_aborting;
+  }
+
   public function deleteUnprocessedCommands() {
     foreach ($this->getUnprocessedCommands() as $key => $command_object) {
       $command_object->delete();
@@ -376,6 +448,29 @@ final class HarbormasterBuild extends HarbormasterDAO
     }
 
     return $this;
+  }
+
+
+/* -(  PhabricatorApplicationTransactionInterface  )------------------------- */
+
+
+  public function getApplicationTransactionEditor() {
+    return new HarbormasterBuildTransactionEditor();
+  }
+
+  public function getApplicationTransactionObject() {
+    return $this;
+  }
+
+  public function getApplicationTransactionTemplate() {
+    return new HarbormasterBuildTransaction();
+  }
+
+  public function willRenderTimeline(
+    PhabricatorApplicationTransactionView $timeline,
+    AphrontRequest $request) {
+
+    return $timeline;
   }
 
 

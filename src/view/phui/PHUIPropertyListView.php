@@ -6,12 +6,12 @@ final class PHUIPropertyListView extends AphrontView {
   private $hasKeyboardShortcuts;
   private $object;
   private $invokedWillRenderEvent;
-  private $actionList;
+  private $actionList = null;
   private $classes = array();
   private $stacked;
 
-  const ICON_SUMMARY = 'fa-align-left bluegrey';
-  const ICON_TESTPLAN = 'fa-file-text-o bluegrey';
+  const ICON_SUMMARY = 'fa-align-left';
+  const ICON_TESTPLAN = 'fa-file-text-o';
 
   protected function canAppendChild() {
     return false;
@@ -25,6 +25,10 @@ final class PHUIPropertyListView extends AphrontView {
   public function setActionList(PhabricatorActionListView $list) {
     $this->actionList = $list;
     return $this;
+  }
+
+  public function getActionList() {
+    return $this->actionList;
   }
 
   public function setStacked($stacked) {
@@ -64,7 +68,7 @@ final class PHUIPropertyListView extends AphrontView {
     return $this;
   }
 
-  public function addSectionHeader($name, $icon=null) {
+  public function addSectionHeader($name, $icon = null) {
     $this->parts[] = array(
       'type' => 'section',
       'name' => $name,
@@ -123,6 +127,7 @@ final class PHUIPropertyListView extends AphrontView {
     // If we have an action list, make sure we render a property part, even
     // if there are no properties. Otherwise, the action list won't render.
     if ($this->actionList) {
+      $this->classes[] = 'phui-property-list-has-actions';
       $have_property_part = false;
       foreach ($this->parts as $part) {
         if ($part['type'] == 'property') {
@@ -204,7 +209,7 @@ final class PHUIPropertyListView extends AphrontView {
     $list = phutil_tag(
       'dl',
       array(
-        'class' => 'phui-property-list-properties '.$stacked,
+        'class' => 'phui-property-list-properties',
       ),
       $items);
 
@@ -216,7 +221,7 @@ final class PHUIPropertyListView extends AphrontView {
     $list = phutil_tag(
       'div',
       array(
-        'class' => 'phui-property-list-properties-wrap',
+        'class' => 'phui-property-list-properties-wrap '.$stacked,
       ),
       array($shortcuts, $list));
 
@@ -243,7 +248,7 @@ final class PHUIPropertyListView extends AphrontView {
     $name = $part['name'];
     if ($part['icon']) {
       $icon = id(new PHUIIconView())
-        ->setIconFont($part['icon']);
+        ->setIconFont($part['icon'].' bluegrey');
       $name = phutil_tag(
         'span',
         array(

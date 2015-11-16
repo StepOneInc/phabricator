@@ -12,10 +12,10 @@ final class PhabricatorDashboardPanelSearchQueryCustomField
   }
 
   public function renderEditControl(array $handles) {
-
-    $engines = id(new PhutilSymbolLoader())
+    $engines = id(new PhutilClassMapQuery())
       ->setAncestorClass('PhabricatorApplicationSearchEngine')
-      ->loadObjects();
+      ->setFilterMethod('canUseInPanelContext')
+      ->execute();
 
     $value = $this->getFieldValue();
 
@@ -52,8 +52,8 @@ final class PhabricatorDashboardPanelSearchQueryCustomField
         'options' => $queries,
         'value' => array(
           'key' => strlen($value) ? $value : null,
-          'name' => $name
-        )
+          'name' => $name,
+        ),
       ));
 
     return id(new AphrontFormSelectControl())

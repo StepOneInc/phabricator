@@ -4,6 +4,8 @@ final class PonderAnswerTransaction
   extends PhabricatorApplicationTransaction {
 
   const TYPE_CONTENT = 'ponder.answer:content';
+  const TYPE_STATUS = 'ponder.answer:status';
+  const TYPE_QUESTION_ID = 'ponder.answer:question-id';
 
   public function getApplicationName() {
     return 'ponder';
@@ -26,6 +28,7 @@ final class PonderAnswerTransaction
 
     switch ($this->getTransactionType()) {
       case self::TYPE_CONTENT:
+      case self::TYPE_STATUS:
         $phids[] = $this->getObjectPHID();
         break;
     }
@@ -33,40 +36,102 @@ final class PonderAnswerTransaction
     return $phids;
   }
 
+  public function getRemarkupBlocks() {
+    $blocks = parent::getRemarkupBlocks();
+
+    switch ($this->getTransactionType()) {
+      case self::TYPE_CONTENT:
+        $blocks[] = $this->getNewValue();
+        break;
+    }
+
+    return $blocks;
+  }
+
+  public function shouldHide() {
+    switch ($this->getTransactionType()) {
+      case self::TYPE_QUESTION_ID:
+        return true;
+    }
+    return parent::shouldHide();
+  }
+
   public function getTitle() {
     $author_phid = $this->getAuthorPHID();
     $object_phid = $this->getObjectPHID();
 
+    $old = $this->getOldValue();
+    $new = $this->getNewValue();
+
     switch ($this->getTransactionType()) {
       case self::TYPE_CONTENT:
-        return pht(
-          '%s edited %s.',
-          $this->renderHandleLink($author_phid),
-          $this->renderHandleLink($object_phid));
+        if ($old === '') {
+          return pht(
+            '%s added %s.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        } else {
+          return pht(
+            '%s edited %s.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        }
+      break;
+      case self::TYPE_STATUS:
+        if ($new == PonderAnswerStatus::ANSWER_STATUS_VISIBLE) {
+          return pht(
+            '%s marked %s as visible.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        } else if ($new == PonderAnswerStatus::ANSWER_STATUS_HIDDEN) {
+          return pht(
+            '%s marked %s as hidden.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        }
+      break;
     }
 
     return parent::getTitle();
   }
 
-  public function getTitleForFeed(PhabricatorFeedStory $story) {
+  public function getTitleForFeed() {
     $author_phid = $this->getAuthorPHID();
     $object_phid = $this->getObjectPHID();
 
+    $old = $this->getOldValue();
+    $new = $this->getNewValue();
+
     switch ($this->getTransactionType()) {
       case self::TYPE_CONTENT:
-        $answer = $story->getObject($object_phid);
-        $question = $answer->getQuestion();
-        $answer_handle = $this->getHandle($object_phid);
-        $link = $answer_handle->renderLink(
-          $question->getFullTitle());
-
-        return pht(
-          '%s updated their answer to %s',
-          $this->renderHandleLink($author_phid),
-          $link);
+        if ($old === '') {
+          return pht(
+            '%s added %s.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        } else {
+          return pht(
+            '%s updated %s.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        }
+      break;
+      case self::TYPE_STATUS:
+        if ($new == PonderAnswerStatus::ANSWER_STATUS_VISIBLE) {
+          return pht(
+            '%s marked %s as visible.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        } else if ($new == PonderAnswerStatus::ANSWER_STATUS_HIDDEN) {
+          return pht(
+            '%s marked %s as hidden.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($object_phid));
+        }
+      break;
     }
 
-    return parent::getTitleForFeed($story);
+    return parent::getTitleForFeed();
   }
 
   public function getBodyForFeed(PhabricatorFeedStory $story) {
@@ -77,7 +142,9 @@ final class PonderAnswerTransaction
     switch ($this->getTransactionType()) {
       case self::TYPE_CONTENT:
         return phutil_escape_html_newlines(
-          phutil_utf8_shorten($new, 128));
+          id(new PhutilUTF8StringTruncator())
+          ->setMaximumGlyphs(128)
+          ->truncateString($new));
         break;
     }
     return parent::getBodyForFeed($story);

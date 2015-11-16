@@ -3,23 +3,16 @@
 final class ReleephRequestActionController
   extends ReleephRequestController {
 
-  private $action;
-  private $requestID;
-
-  public function willProcessRequest(array $data) {
-    $this->action = $data['action'];
-    $this->requestID = $data['requestID'];
-  }
-
-  public function processRequest() {
-    $request = $this->getRequest();
-    $viewer = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $action = $request->getURIData('action');
+    $id = $request->getURIData('requestID');
+    $viewer = $request->getViewer();
 
     $request->validateCSRF();
 
     $pull = id(new ReleephRequestQuery())
       ->setViewer($viewer)
-      ->withIDs(array($this->requestID))
+      ->withIDs(array($id))
       ->executeOne();
     if (!$pull) {
       return new Aphront404Response();
@@ -27,9 +20,6 @@ final class ReleephRequestActionController
 
     $branch = $pull->getBranch();
     $product = $branch->getProduct();
-
-    $action = $this->action;
-
     $origin_uri = '/'.$pull->getMonogram();
 
     $editor = id(new ReleephRequestTransactionalEditor())
@@ -44,7 +34,8 @@ final class ReleephRequestActionController
       case 'pass':
         static $action_map = array(
           'want' => ReleephRequest::INTENT_WANT,
-          'pass' => ReleephRequest::INTENT_PASS);
+          'pass' => ReleephRequest::INTENT_PASS,
+        );
         $intent = $action_map[$action];
         $xactions[] = id(new ReleephRequestTransaction())
           ->setTransactionType(ReleephRequestTransaction::TYPE_USER_INTENT)
@@ -63,8 +54,9 @@ final class ReleephRequestActionController
           // We're all good!
         } else {
           throw new Exception(
-            "Bug!  Only pushers or the requestor can manually change a ".
-            "request's in-branch status!");
+            pht(
+              "Bug! Only pushers or the requestor can manually change a ".
+              "request's in-branch status!"));
         }
 
         if ($action === 'mark-manually-picked') {
@@ -88,7 +80,8 @@ final class ReleephRequestActionController
         break;
 
       default:
-        throw new Exception("unknown or unimplemented action {$action}");
+        throw new Exception(
+          pht('Unknown or unimplemented action %s.', $action));
     }
 
     $editor->applyTransactions($pull, $xactions);

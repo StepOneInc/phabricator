@@ -134,6 +134,12 @@
 .phui-icon-view.indigo {
   color: {$indigo};
 }
+.phui-icon-view.pink {
+  color: {$pink};
+}
+.phui-icon-view.fire {
+  color: {$fire};
+}
 .phui-icon-view.violet {
   color: {$violet};
 }

@@ -1,7 +1,9 @@
 <?php
 
 final class NuanceSource extends NuanceDAO
-  implements PhabricatorPolicyInterface {
+  implements
+    PhabricatorApplicationTransactionInterface,
+    PhabricatorPolicyInterface {
 
   protected $name;
   protected $type;
@@ -9,12 +11,25 @@ final class NuanceSource extends NuanceDAO
   protected $mailKey;
   protected $viewPolicy;
   protected $editPolicy;
+  protected $defaultQueuePHID;
 
-  public function getConfiguration() {
+  private $definition;
+
+  protected function getConfiguration() {
     return array(
       self::CONFIG_AUX_PHID => true,
       self::CONFIG_SERIALIZATION => array(
         'data' => self::SERIALIZATION_JSON,
+      ),
+      self::CONFIG_COLUMN_SCHEMA => array(
+        'name' => 'text255?',
+        'type' => 'text32',
+        'mailKey' => 'bytes20',
+      ),
+      self::CONFIG_KEY_SCHEMA => array(
+        'key_type' => array(
+          'columns' => array('type', 'dateModified'),
+        ),
       ),
     ) + parent::getConfiguration();
   }
@@ -45,14 +60,62 @@ final class NuanceSource extends NuanceDAO
     $edit_policy = $app->getPolicy(
       NuanceSourceDefaultEditCapability::CAPABILITY);
 
-    $definitions = NuanceSourceDefinition::getAllDefinitions();
-    $lucky_definition = head($definitions);
-
     return id(new NuanceSource())
       ->setViewPolicy($view_policy)
-      ->setEditPolicy($edit_policy)
-      ->setType($lucky_definition->getSourceTypeConstant());
+      ->setEditPolicy($edit_policy);
   }
+
+  public function getDefinition() {
+    if ($this->definition === null) {
+      $definitions = NuanceSourceDefinition::getAllDefinitions();
+      if (isset($definitions[$this->getType()])) {
+        $definition = clone $definitions[$this->getType()];
+        $definition->setSourceObject($this);
+        $this->definition = $definition;
+      }
+    }
+
+    return $this->definition;
+  }
+
+  public function requireDefinition() {
+    $definition = $this->getDefinition();
+    if (!$definition) {
+      throw new Exception(
+        pht(
+          'Unable to load source definition implementation for source '.
+          'type "%s".',
+          $this->getType()));
+    }
+    return $definition;
+  }
+
+
+/* -(  PhabricatorApplicationTransactionInterface  )------------------------- */
+
+
+  public function getApplicationTransactionEditor() {
+    return new NuanceSourceEditor();
+  }
+
+  public function getApplicationTransactionObject() {
+    return $this;
+  }
+
+  public function getApplicationTransactionTemplate() {
+    return new NuanceSourceTransaction();
+  }
+
+  public function willRenderTimeline(
+    PhabricatorApplicationTransactionView $timeline,
+    AphrontRequest $request) {
+
+    return $timeline;
+  }
+
+
+/* -(  PhabricatorPolicyInterface  )----------------------------------------- */
+
 
   public function getCapabilities() {
     return array(

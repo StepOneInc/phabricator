@@ -11,6 +11,14 @@ final class PhabricatorAsanaConfigOptions
     return pht('Asana integration options.');
   }
 
+  public function getFontIcon() {
+    return 'fa-exchange';
+  }
+
+  public function getGroup() {
+    return 'core';
+  }
+
   public function getOptions() {
     return array(
       $this->newOption('asana.workspace-id', 'string', null)
@@ -30,7 +38,7 @@ final class PhabricatorAsanaConfigOptions
             'object in Phabricator comes from. For example, you can add code '.
             'reviews in Asana to a "Differential" project.'.
             "\n\n".
-            'NOTE: This feature is new and experimental.'))
+            'NOTE: This feature is new and experimental.')),
     );
   }
 
@@ -88,8 +96,11 @@ final class PhabricatorAsanaConfigOptions
     }
 
     $out = array();
-    $out[] = pht('| Workspace ID | Workspace Name |');
-    $out[] =     '| ------------ | -------------- |';
+    $out[] = sprintf(
+      '| %s | %s |',
+      pht('Workspace ID'),
+      pht('Workspace Name'));
+    $out[] = '| ------------ | -------------- |';
     foreach ($workspaces as $workspace) {
       $out[] = sprintf('| `%s` | `%s` |', $workspace['id'], $workspace['name']);
     }
@@ -112,9 +123,9 @@ final class PhabricatorAsanaConfigOptions
 
     $viewer = $request->getUser();
 
-    $publishers = id(new PhutilSymbolLoader())
+    $publishers = id(new PhutilClassMapQuery())
       ->setAncestorClass('DoorkeeperFeedStoryPublisher')
-      ->loadObjects();
+      ->execute();
 
     $out = array();
     $out[] = pht(

@@ -8,16 +8,16 @@ final class PhabricatorProjectProjectPHIDType extends PhabricatorPHIDType {
     return pht('Project');
   }
 
-  public function getPHIDTypeApplicationClass() {
-    return 'PhabricatorProjectApplication';
-  }
-
   public function getTypeIcon() {
     return 'fa-briefcase bluegrey';
   }
 
   public function newObject() {
     return new PhabricatorProject();
+  }
+
+  public function getPHIDTypeApplicationClass() {
+    return 'PhabricatorProjectApplication';
   }
 
   protected function buildQueryForObjects(
@@ -49,7 +49,7 @@ final class PhabricatorProjectProjectPHIDType extends PhabricatorPHIDType {
       $handle->setTagColor($project->getColor());
 
       if ($project->isArchived()) {
-        $handle->setStatus(PhabricatorObjectHandleStatus::STATUS_CLOSED);
+        $handle->setStatus(PhabricatorObjectHandle::STATUS_CLOSED);
       }
     }
   }

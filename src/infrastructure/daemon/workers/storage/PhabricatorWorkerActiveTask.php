@@ -7,11 +7,43 @@ final class PhabricatorWorkerActiveTask extends PhabricatorWorkerTask {
   private $serverTime;
   private $localTime;
 
-  public function getConfiguration() {
-    return array(
+  protected function getConfiguration() {
+    $parent = parent::getConfiguration();
+
+    $config = array(
       self::CONFIG_IDS => self::IDS_COUNTER,
       self::CONFIG_TIMESTAMPS => false,
-    ) + parent::getConfiguration();
+      self::CONFIG_KEY_SCHEMA => array(
+        'dataID' => array(
+          'columns' => array('dataID'),
+          'unique' => true,
+        ),
+        'taskClass' => array(
+          'columns' => array('taskClass'),
+        ),
+        'leaseExpires' => array(
+          'columns' => array('leaseExpires'),
+        ),
+        'leaseOwner' => array(
+          'columns' => array('leaseOwner(16)'),
+        ),
+        'key_failuretime' => array(
+          'columns' => array('failureTime'),
+        ),
+        'leaseOwner_2' => array(
+          'columns' => array('leaseOwner', 'priority', 'id'),
+        ),
+      ) + $parent[self::CONFIG_KEY_SCHEMA],
+    );
+
+    $config[self::CONFIG_COLUMN_SCHEMA] = array(
+      // T6203/NULLABILITY
+      // This isn't nullable in the archive table, so at a minimum these
+      // should be the same.
+      'dataID' => 'uint32?',
+    ) + $parent[self::CONFIG_COLUMN_SCHEMA];
+
+    return $config + $parent;
   }
 
   public function setServerTime($server_time) {
@@ -54,27 +86,38 @@ final class PhabricatorWorkerActiveTask extends PhabricatorWorkerTask {
   }
 
   protected function checkLease() {
-    if ($this->leaseOwner) {
-      $current_server_time = $this->serverTime + (time() - $this->localTime);
-      if ($current_server_time >= $this->leaseExpires) {
-        $id = $this->getID();
-        $class = $this->getTaskClass();
-        throw new Exception(
-          "Trying to update Task {$id} ({$class}) after lease expiration!");
-      }
+    $owner = $this->leaseOwner;
+
+    if (!$owner) {
+      return;
+    }
+
+    if ($owner == PhabricatorWorker::YIELD_OWNER) {
+      return;
+    }
+
+    $current_server_time = $this->serverTime + (time() - $this->localTime);
+    if ($current_server_time >= $this->leaseExpires) {
+      throw new Exception(
+        pht(
+          'Trying to update Task %d (%s) after lease expiration!',
+          $this->getID(),
+          $this->getTaskClass()));
     }
   }
 
   public function delete() {
     throw new Exception(
-      'Active tasks can not be deleted directly. '.
-      'Use archiveTask() to move tasks to the archive.');
+      pht(
+        'Active tasks can not be deleted directly. '.
+        'Use %s to move tasks to the archive.',
+        'archiveTask()'));
   }
 
   public function archiveTask($result, $duration) {
     if ($this->getID() === null) {
       throw new Exception(
-        "Attempting to archive a task which hasn't been save()d!");
+        pht("Attempting to archive a task which hasn't been saved!"));
     }
 
     $this->checkLease();
@@ -87,6 +130,7 @@ final class PhabricatorWorkerActiveTask extends PhabricatorWorkerTask {
       ->setFailureCount($this->getFailureCount())
       ->setDataID($this->getDataID())
       ->setPriority($this->getPriority())
+      ->setObjectPHID($this->getObjectPHID())
       ->setResult($result)
       ->setDuration($duration);
 
@@ -102,16 +146,19 @@ final class PhabricatorWorkerActiveTask extends PhabricatorWorkerTask {
     $this->checkLease();
 
     $did_succeed = false;
+    $worker = null;
     try {
       $worker = $this->getWorkerInstance();
+      $worker->setCurrentWorkerTask($this);
 
       $maximum_failures = $worker->getMaximumRetryCount();
       if ($maximum_failures !== null) {
         if ($this->getFailureCount() > $maximum_failures) {
-          $id = $this->getID();
           throw new PhabricatorWorkerPermanentFailureException(
-            "Task {$id} has exceeded the maximum number of failures ".
-            "({$maximum_failures}).");
+            pht(
+              'Task % has exceeded the maximum number of failures (%d).',
+              $this->getID(),
+              $maximum_failures));
         }
       }
 
@@ -137,6 +184,8 @@ final class PhabricatorWorkerActiveTask extends PhabricatorWorkerTask {
     } catch (PhabricatorWorkerYieldException $ex) {
       $this->setExecutionException($ex);
 
+      $this->setLeaseOwner(PhabricatorWorker::YIELD_OWNER);
+
       $retry = $ex->getDuration();
       $retry = max($retry, 5);
 
@@ -149,7 +198,11 @@ final class PhabricatorWorkerActiveTask extends PhabricatorWorkerTask {
       $this->setFailureCount($this->getFailureCount() + 1);
       $this->setFailureTime(time());
 
-      $retry = $worker->getWaitBeforeRetry($this);
+      $retry = null;
+      if ($worker) {
+        $retry = $worker->getWaitBeforeRetry($this);
+      }
+
       $retry = coalesce(
         $retry,
         PhabricatorWorkerLeaseQuery::getDefaultWaitBeforeRetry());
@@ -164,8 +217,14 @@ final class PhabricatorWorkerActiveTask extends PhabricatorWorkerTask {
     // so execute it out here and just let the exception escape.
     if ($did_succeed) {
       foreach ($worker->getQueuedTasks() as $task) {
-        list($class, $data) = $task;
-        PhabricatorWorker::scheduleTask($class, $data, $this->getPriority());
+        list($class, $data, $options) = $task;
+
+        // Default the new task priority to our own priority.
+        $options = $options + array(
+          'priority' => (int)$this->getPriority(),
+        );
+
+        PhabricatorWorker::scheduleTask($class, $data, $options);
       }
     }
 

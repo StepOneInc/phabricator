@@ -3,15 +3,13 @@
 final class PhabricatorNotificationPanelController
   extends PhabricatorNotificationController {
 
-  public function processRequest() {
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
 
-    $request = $this->getRequest();
-    $user = $request->getUser();
-
-    $query = new PhabricatorNotificationQuery();
-    $query->setViewer($user);
-    $query->setUserPHID($user->getPHID());
-    $query->setLimit(15);
+    $query = id(new PhabricatorNotificationQuery())
+      ->setViewer($viewer)
+      ->withUserPHIDs(array($viewer->getPHID()))
+      ->setLimit(15);
 
     $stories = $query->execute();
 
@@ -34,7 +32,7 @@ final class PhabricatorNotificationPanelController
       'a',
       array(
         'sigil' => 'workflow',
-        'href' => (string) $clear_uri,
+        'href' => (string)$clear_uri,
         'class' => $clear_ui_class,
       ),
       pht('Mark All Read'));
@@ -46,7 +44,23 @@ final class PhabricatorNotificationPanelController
       ),
       pht('Notifications'));
 
-    $connection_status = new PhabricatorNotificationStatusView();
+    if (PhabricatorEnv::getEnvConfig('notification.enabled')) {
+      $connection_status = new PhabricatorNotificationStatusView();
+    } else {
+      $connection_status = phutil_tag(
+        'a',
+        array(
+          'href' => PhabricatorEnv::getDoclink(
+            'Notifications User Guide: Setup and Configuration'),
+        ),
+        pht('Notification Server not enabled.'));
+    }
+    $connection_ui = phutil_tag(
+      'div',
+      array(
+        'class' => 'phabricator-notification-footer',
+      ),
+      $connection_status);
 
     $header = phutil_tag(
       'div',
@@ -54,27 +68,18 @@ final class PhabricatorNotificationPanelController
         'class' => 'phabricator-notification-header',
       ),
       array(
-        $connection_status,
         $notifications_link,
+        $clear_ui,
       ));
 
     $content = hsprintf(
-      '%s'.
-      '%s'.
-      '<div class="phabricator-notification-view-all">%s %s %s</div>',
+      '%s%s%s',
       $header,
       $content,
-      $clear_ui,
-      " \xC2\xB7 ",
-      phutil_tag(
-        'a',
-        array(
-          'href' => '/notification/',
-        ),
-        pht('View All Notifications')));
+      $connection_ui);
 
     $unread_count = id(new PhabricatorFeedStoryNotification())
-      ->countUnread($user);
+      ->countUnread($viewer);
 
     $json = array(
       'content' => $content,

@@ -2,11 +2,18 @@
 
 final class PonderAnswerEditor extends PonderEditor {
 
+  public function getEditorObjectsDescription() {
+    return pht('Ponder Answers');
+  }
+
   public function getTransactionTypes() {
     $types = parent::getTransactionTypes();
 
     $types[] = PhabricatorTransactions::TYPE_COMMENT;
+
     $types[] = PonderAnswerTransaction::TYPE_CONTENT;
+    $types[] = PonderAnswerTransaction::TYPE_STATUS;
+    $types[] = PonderAnswerTransaction::TYPE_QUESTION_ID;
 
     return $types;
   }
@@ -17,7 +24,10 @@ final class PonderAnswerEditor extends PonderEditor {
 
     switch ($xaction->getTransactionType()) {
       case PonderAnswerTransaction::TYPE_CONTENT:
+      case PonderAnswerTransaction::TYPE_STATUS:
         return $object->getContent();
+      case PonderAnswerTransaction::TYPE_QUESTION_ID:
+        return $object->getQuestionID();
     }
   }
 
@@ -27,6 +37,8 @@ final class PonderAnswerEditor extends PonderEditor {
 
     switch ($xaction->getTransactionType()) {
       case PonderAnswerTransaction::TYPE_CONTENT:
+      case PonderAnswerTransaction::TYPE_STATUS:
+      case PonderAnswerTransaction::TYPE_QUESTION_ID:
         return $xaction->getNewValue();
     }
   }
@@ -38,6 +50,12 @@ final class PonderAnswerEditor extends PonderEditor {
     switch ($xaction->getTransactionType()) {
       case PonderAnswerTransaction::TYPE_CONTENT:
         $object->setContent($xaction->getNewValue());
+        break;
+      case PonderAnswerTransaction::TYPE_STATUS:
+        $object->setStatus($xaction->getNewValue());
+        break;
+      case PonderAnswerTransaction::TYPE_QUESTION_ID:
+        $object->setQuestionID($xaction->getNewValue());
         break;
     }
   }
@@ -67,17 +85,39 @@ final class PonderAnswerEditor extends PonderEditor {
     return true;
   }
 
+  protected function getMailTo(PhabricatorLiskDAO $object) {
+    $phids = array();
+    $phids[] = $object->getAuthorPHID();
+    $phids[] = $this->requireActor()->getPHID();
+
+    $question = id(new PonderQuestionQuery())
+      ->setViewer($this->requireActor())
+      ->withIDs(array($object->getQuestionID()))
+      ->executeOne();
+
+    $phids[] = $question->getAuthorPHID();
+
+    return $phids;
+  }
+
+  protected function shouldPublishFeedStory(
+    PhabricatorLiskDAO $object,
+    array $xactions) {
+      return true;
+  }
+
   protected function buildReplyHandler(PhabricatorLiskDAO $object) {
-    $question = $object->getQuestion();
-    return id(new PonderQuestionReplyHandler())
-      ->setMailReceiver($question);
+    return id(new PonderAnswerReplyHandler())
+      ->setMailReceiver($object);
   }
 
   protected function buildMailTemplate(PhabricatorLiskDAO $object) {
-    $question = $object->getQuestion();
-    return parent::buildMailTemplate($question);
-  }
+    $id = $object->getID();
 
+    return id(new PhabricatorMetaMTAMail())
+      ->setSubject("ANSR{$id}")
+      ->addHeader('Thread-Topic', "ANSR{$id}");
+  }
 
   protected function buildMailBody(
     PhabricatorLiskDAO $object,
@@ -94,7 +134,7 @@ final class PonderAnswerEditor extends PonderEditor {
       }
     }
 
-    $body->addTextSection(
+    $body->addLinkSection(
       pht('ANSWER DETAIL'),
       PhabricatorEnv::getProductionURI($object->getURI()));
 

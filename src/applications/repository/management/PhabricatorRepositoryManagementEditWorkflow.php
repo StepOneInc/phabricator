@@ -3,11 +3,14 @@
 final class PhabricatorRepositoryManagementEditWorkflow
   extends PhabricatorRepositoryManagementWorkflow {
 
-  public function didConstruct() {
+  protected function didConstruct() {
     $this
       ->setName('edit')
       ->setExamples('**edit** --as __username__ __repository__ ...')
-      ->setSynopsis('Edit __repository__, named by callsign.')
+      ->setSynopsis(
+        pht(
+          'Edit __repository__, named by callsign '.
+          '(will eventually be deprecated by Conduit).'))
       ->setArguments(
         array(
           array(
@@ -17,12 +20,22 @@ final class PhabricatorRepositoryManagementEditWorkflow
           array(
             'name' => 'as',
             'param' => 'user',
-            'help' => 'Edit as user.',
+            'help' => pht('Edit as user.'),
           ),
           array(
             'name' => 'local-path',
             'param' => 'path',
-            'help' => 'Edit the local path.',
+            'help' => pht('Edit the local path.'),
+          ),
+          array(
+            'name' => 'serve-http',
+            'param' => 'string',
+            'help' => pht('Edit the http serving policy.'),
+          ),
+          array(
+            'name' => 'serve-ssh',
+            'param' => 'string',
+            'help' => pht('Edit the ssh serving policy.'),
           ),
         ));
   }
@@ -32,7 +45,7 @@ final class PhabricatorRepositoryManagementEditWorkflow
 
     if (!$repos) {
       throw new PhutilArgumentUsageException(
-        'Specify one or more repositories to edit, by callsign.');
+        pht('Specify one or more repositories to edit, by callsign.'));
     }
 
     $console = PhutilConsole::getConsole();
@@ -47,7 +60,9 @@ final class PhabricatorRepositoryManagementEditWorkflow
     $username = $args->getArg('as');
     if (!$username) {
       throw new PhutilArgumentUsageException(
-        pht('Specify a user to edit as with --as <username>.'));
+        pht(
+          'Specify a user to edit as with %s.',
+          '--as <username>'));
     }
 
     $actor = id(new PhabricatorPeopleQuery())
@@ -61,17 +76,38 @@ final class PhabricatorRepositoryManagementEditWorkflow
     }
 
     foreach ($repos as $repo) {
-      $console->writeOut("Editing '%s'...\n", $repo->getCallsign());
+      $console->writeOut("%s\n", pht("Editing '%s'...", $repo->getCallsign()));
 
       $xactions = array();
 
       $type_local_path = PhabricatorRepositoryTransaction::TYPE_LOCAL_PATH;
+      $type_protocol_http =
+        PhabricatorRepositoryTransaction::TYPE_PROTOCOL_HTTP;
+      $type_protocol_ssh = PhabricatorRepositoryTransaction::TYPE_PROTOCOL_SSH;
+      $allowed_serve_modes = array(
+        PhabricatorRepository::SERVE_OFF,
+        PhabricatorRepository::SERVE_READONLY,
+        PhabricatorRepository::SERVE_READWRITE,
+      );
 
       if ($args->getArg('local-path')) {
         $xactions[] = id(new PhabricatorRepositoryTransaction())
           ->setTransactionType($type_local_path)
           ->setNewValue($args->getArg('local-path'));
       }
+      $serve_http = $args->getArg('serve-http');
+      if ($serve_http && in_array($serve_http, $allowed_serve_modes)) {
+        $xactions[] = id(new PhabricatorRepositoryTransaction())
+          ->setTransactionType($type_protocol_http)
+          ->setNewValue($serve_http);
+      }
+      $serve_ssh = $args->getArg('serve-ssh');
+      if ($serve_ssh && in_array($serve_ssh, $allowed_serve_modes)) {
+        $xactions[] = id(new PhabricatorRepositoryTransaction())
+          ->setTransactionType($type_protocol_ssh)
+          ->setNewValue($serve_ssh);
+      }
+
 
       if (!$xactions) {
         throw new PhutilArgumentUsageException(
@@ -88,7 +124,7 @@ final class PhabricatorRepositoryManagementEditWorkflow
         ->applyTransactions($repo, $xactions);
     }
 
-    $console->writeOut("Done.\n");
+    $console->writeOut("%s\n", pht('Done.'));
 
     return 0;
   }

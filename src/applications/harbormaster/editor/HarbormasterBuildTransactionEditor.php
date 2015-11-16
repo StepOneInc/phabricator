@@ -3,6 +3,14 @@
 final class HarbormasterBuildTransactionEditor
   extends PhabricatorApplicationTransactionEditor {
 
+  public function getEditorApplicationClass() {
+    return 'PhabricatorHarbormasterApplication';
+  }
+
+  public function getEditorObjectsDescription() {
+    return pht('Harbormaster Builds');
+  }
+
   public function getTransactionTypes() {
     $types = parent::getTransactionTypes();
 
@@ -63,14 +71,17 @@ final class HarbormasterBuildTransactionEditor
       case HarbormasterBuildCommand::COMMAND_RESTART:
         $issuable = $build->canRestartBuild();
         break;
-      case HarbormasterBuildCommand::COMMAND_STOP:
-        $issuable = $build->canStopBuild();
+      case HarbormasterBuildCommand::COMMAND_PAUSE:
+        $issuable = $build->canPauseBuild();
         break;
       case HarbormasterBuildCommand::COMMAND_RESUME:
         $issuable = $build->canResumeBuild();
         break;
+      case HarbormasterBuildCommand::COMMAND_ABORT:
+        $issuable = $build->canAbortBuild();
+        break;
       default:
-        throw new Exception("Unknown command $command");
+        throw new Exception(pht('Unknown command %s', $command));
     }
 
     if (!$issuable) {
@@ -86,7 +97,7 @@ final class HarbormasterBuildTransactionEditor
     PhabricatorWorker::scheduleTask(
       'HarbormasterBuildWorker',
       array(
-        'buildID' => $build->getID()
+        'buildID' => $build->getID(),
       ));
   }
 

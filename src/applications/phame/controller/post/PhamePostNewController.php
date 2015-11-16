@@ -1,23 +1,17 @@
 <?php
 
-final class PhamePostNewController extends PhameController {
+final class PhamePostNewController extends PhamePostController {
 
-  private $id;
-
-  public function willProcessRequest(array $data) {
-    $this->id = idx($data, 'id');
-  }
-
-  public function processRequest() {
-    $request = $this->getRequest();
-    $user = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
+    $id = $request->getURIData('id');
 
     $post = null;
     $view_uri = null;
-    if ($this->id) {
+    if ($id) {
       $post = id(new PhamePostQuery())
-        ->setViewer($user)
-        ->withIDs(array($this->id))
+        ->setViewer($viewer)
+        ->withIDs(array($id))
         ->requireCapabilities(
           array(
             PhabricatorPolicyCapability::CAN_EDIT,
@@ -32,7 +26,7 @@ final class PhamePostNewController extends PhameController {
 
       if ($request->isFormPost()) {
         $blog = id(new PhameBlogQuery())
-          ->setViewer($user)
+          ->setViewer($viewer)
           ->withIDs(array($request->getInt('blog')))
           ->requireCapabilities(
             array(
@@ -55,28 +49,25 @@ final class PhamePostNewController extends PhameController {
     }
 
     $blogs = id(new PhameBlogQuery())
-      ->setViewer($user)
+      ->setViewer($viewer)
       ->requireCapabilities(
         array(
           PhabricatorPolicyCapability::CAN_JOIN,
         ))
       ->execute();
 
-    $nav = $this->renderSideNavFilterView();
-    $nav->selectFilter('post/new');
-
     $crumbs = $this->buildApplicationCrumbs();
     $crumbs->addTextCrumb($title, $view_uri);
-    $nav->appendChild($crumbs);
 
+    $notification = null;
+    $form_box = null;
     if (!$blogs) {
-      $notification = id(new AphrontErrorView())
-        ->setSeverity(AphrontErrorView::SEVERITY_NODATA)
+      $notification = id(new PHUIInfoView())
+        ->setSeverity(PHUIInfoView::SEVERITY_NODATA)
         ->appendChild(
           pht('You do not have permission to join any blogs. Create a blog '.
               'first, then you can post to it.'));
 
-      $nav->appendChild($notification);
     } else {
       $options = mpull($blogs, 'getName', 'getID');
       asort($options);
@@ -87,7 +78,7 @@ final class PhamePostNewController extends PhameController {
       }
 
       $form = id(new AphrontFormView())
-        ->setUser($user)
+        ->setUser($viewer)
         ->appendChild(
           id(new AphrontFormSelectControl())
             ->setLabel(pht('Blog'))
@@ -110,19 +101,20 @@ final class PhamePostNewController extends PhameController {
               ->setValue(pht('Continue')));
       }
 
-
       $form_box = id(new PHUIObjectBoxView())
         ->setHeaderText($title)
         ->setForm($form);
-
-      $nav->appendChild($form_box);
     }
 
-    return $this->buildApplicationPage(
-      $nav,
-      array(
-        'title'   => $title,
+    return $this->newPage()
+      ->setTitle($title)
+      ->setCrumbs($crumbs)
+      ->appendChild(
+        array(
+          $notification,
+          $form_box,
       ));
-  }
+
+    }
 
 }

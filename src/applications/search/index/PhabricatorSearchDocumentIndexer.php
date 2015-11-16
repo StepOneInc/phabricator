@@ -1,6 +1,17 @@
 <?php
 
-abstract class PhabricatorSearchDocumentIndexer {
+abstract class PhabricatorSearchDocumentIndexer extends Phobject {
+
+  private $context;
+
+  protected function setContext($context) {
+    $this->context = $context;
+    return $this;
+  }
+
+  protected function getContext() {
+    return $this->context;
+  }
 
   abstract public function getIndexableObject();
   abstract protected function buildAbstractDocumentByPHID($phid);
@@ -25,45 +36,42 @@ abstract class PhabricatorSearchDocumentIndexer {
       ->withPHIDs(array($phid))
       ->executeOne();
     if (!$object) {
-      throw new Exception("Unable to load object by phid '{$phid}'!");
+      throw new Exception(pht("Unable to load object by PHID '%s'!", $phid));
     }
     return $object;
   }
 
-  public function indexDocumentByPHID($phid) {
-    try {
-      $document = $this->buildAbstractDocumentByPHID($phid);
+  public function indexDocumentByPHID($phid, $context) {
+    $this->setContext($context);
 
-      $object = $this->loadDocumentByPHID($phid);
-
-      // Automatically rebuild CustomField indexes if the object uses custom
-      // fields.
-      if ($object instanceof PhabricatorCustomFieldInterface) {
-        $this->indexCustomFields($document, $object);
-      }
-
-      // Automatically rebuild subscriber indexes if the object is subscribable.
-      if ($object instanceof PhabricatorSubscribableInterface) {
-        $this->indexSubscribers($document);
-      }
-
-      $engine = PhabricatorSearchEngineSelector::newSelector()->newEngine();
-      try {
-        $engine->reindexAbstractDocument($document);
-      } catch (Exception $ex) {
-        $phid = $document->getPHID();
-        $class = get_class($engine);
-
-        phlog("Unable to index document {$phid} with engine {$class}.");
-        phlog($ex);
-      }
-
-      $this->dispatchDidUpdateIndexEvent($phid, $document);
-    } catch (Exception $ex) {
-      $class = get_class($this);
-      phlog("Unable to build document {$phid} with indexer {$class}.");
-      phlog($ex);
+    $document = $this->buildAbstractDocumentByPHID($phid);
+    if ($document === null) {
+      // This indexer doesn't build a document index, so we're done.
+      return $this;
     }
+
+    $object = $this->loadDocumentByPHID($phid);
+
+    // Automatically rebuild CustomField indexes if the object uses custom
+    // fields.
+    if ($object instanceof PhabricatorCustomFieldInterface) {
+      $this->indexCustomFields($document, $object);
+    }
+
+    // Automatically rebuild subscriber indexes if the object is subscribable.
+    if ($object instanceof PhabricatorSubscribableInterface) {
+      $this->indexSubscribers($document);
+    }
+
+    // Automatically build project relationships
+    if ($object instanceof PhabricatorProjectInterface) {
+      $this->indexProjects($document, $object);
+    }
+
+    $engine = PhabricatorSearchEngine::loadEngine();
+    $engine->reindexAbstractDocument($document);
+
+    $this->dispatchDidUpdateIndexEvent($phid, $document);
 
     return $this;
   }
@@ -93,6 +101,24 @@ abstract class PhabricatorSearchDocumentIndexer {
     }
   }
 
+  protected function indexProjects(
+    PhabricatorSearchAbstractDocument $doc,
+    PhabricatorProjectInterface $object) {
+
+    $project_phids = PhabricatorEdgeQuery::loadDestinationPHIDs(
+      $object->getPHID(),
+      PhabricatorProjectObjectHasProjectEdgeType::EDGECONST);
+    if ($project_phids) {
+      foreach ($project_phids as $project_phid) {
+        $doc->addRelationship(
+          PhabricatorSearchRelationship::RELATIONSHIP_PROJECT,
+          $project_phid,
+          PhabricatorProjectProjectPHIDType::TYPECONST,
+          $doc->getDocumentModified()); // Bogus timestamp.
+      }
+    }
+  }
+
   protected function indexTransactions(
     PhabricatorSearchAbstractDocument $doc,
     PhabricatorApplicationTransactionQuery $query,
@@ -110,7 +136,7 @@ abstract class PhabricatorSearchDocumentIndexer {
 
       $comment = $xaction->getComment();
       $doc->addField(
-        PhabricatorSearchField::FIELD_COMMENT,
+        PhabricatorSearchDocumentFieldType::FIELD_COMMENT,
         $comment->getContent());
     }
   }

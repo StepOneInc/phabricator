@@ -24,6 +24,11 @@ final class PhabricatorRepositoryTransaction
   const TYPE_CREDENTIAL = 'repo:credential';
   const TYPE_DANGEROUS = 'repo:dangerous';
   const TYPE_CLONE_NAME = 'repo:clone-name';
+  const TYPE_SERVICE = 'repo:service';
+  const TYPE_SYMBOLS_SOURCES = 'repo:symbol-source';
+  const TYPE_SYMBOLS_LANGUAGE = 'repo:symbol-language';
+  const TYPE_STAGING_URI = 'repo:staging-uri';
+  const TYPE_AUTOMATION_BLUEPRINTS = 'repo:automation-blueprints';
 
   // TODO: Clean up these legacy transaction types.
   const TYPE_SSH_LOGIN = 'repo:ssh-login';
@@ -52,8 +57,22 @@ final class PhabricatorRepositoryTransaction
 
     switch ($this->getTransactionType()) {
       case self::TYPE_PUSH_POLICY:
-        $phids[] = $old;
-        $phids[] = $new;
+      case self::TYPE_SERVICE:
+        if ($old) {
+          $phids[] = $old;
+        }
+        if ($new) {
+          $phids[] = $new;
+        }
+        break;
+      case self::TYPE_SYMBOLS_SOURCES:
+      case self::TYPE_AUTOMATION_BLUEPRINTS:
+        if ($old) {
+          $phids = array_merge($phids, $old);
+        }
+        if ($new) {
+          $phids = array_merge($phids, $new);
+        }
         break;
     }
 
@@ -366,6 +385,86 @@ final class PhabricatorRepositoryTransaction
             $this->renderHandleLink($author_phid),
             $old,
             $new);
+        }
+      case self::TYPE_SERVICE:
+        if (strlen($old) && !strlen($new)) {
+          return pht(
+            '%s moved storage for this repository from %s to local.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($old));
+        } else if (!strlen($old) && strlen($new)) {
+          // TODO: Possibly, we should distinguish between automatic assignment
+          // on creation vs explicit adjustment.
+          return pht(
+            '%s set storage for this repository to %s.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($new));
+        } else {
+          return pht(
+            '%s moved storage for this repository from %s to %s.',
+            $this->renderHandleLink($author_phid),
+            $this->renderHandleLink($old),
+            $this->renderHandleLink($new));
+        }
+      case self::TYPE_SYMBOLS_SOURCES:
+        return pht(
+          '%s changed symbol sources from %s to %s.',
+          $this->renderHandleLink($author_phid),
+          empty($old) ? pht('None') : $this->renderHandleList($old),
+          empty($new) ? pht('None') : $this->renderHandleList($new));
+
+      case self::TYPE_SYMBOLS_LANGUAGE:
+        return pht('%s changed indexed languages from %s to %s.',
+          $this->renderHandleLink($author_phid),
+          $old ? implode(', ', $old) : pht('Any'),
+          $new ? implode(', ', $new) : pht('Any'));
+
+      case self::TYPE_STAGING_URI:
+        if (!$old) {
+          return pht(
+            '%s set "%s" as the staging area for this repository.',
+            $this->renderHandleLink($author_phid),
+            $new);
+        } else if (!$new) {
+          return pht(
+            '%s removed "%s" as the staging area for this repository.',
+            $this->renderHandleLink($author_phid),
+            $old);
+        } else {
+          return pht(
+            '%s changed the staging area for this repository from '.
+            '"%s" to "%s".',
+            $this->renderHandleLink($author_phid),
+            $old,
+            $new);
+        }
+
+      case self::TYPE_AUTOMATION_BLUEPRINTS:
+        $add = array_diff($new, $old);
+        $rem = array_diff($old, $new);
+
+        if ($add && $rem) {
+          return pht(
+            '%s changed %s automation blueprint(s), '.
+            'added %s: %s; removed %s: %s.',
+            $this->renderHandleLink($author_phid),
+            new PhutilNumber(count($add) + count($rem)),
+            new PhutilNumber(count($add)),
+            $this->renderHandleList($add),
+            new PhutilNumber(count($rem)),
+            $this->renderHandleList($rem));
+        } else if ($add) {
+          return pht(
+            '%s added %s automation blueprint(s): %s.',
+            $this->renderHandleLink($author_phid),
+            new PhutilNumber(count($add)),
+            $this->renderHandleList($add));
+        } else {
+          return pht(
+            '%s removed %s automation blueprint(s): %s.',
+            $this->renderHandleLink($author_phid),
+            new PhutilNumber(count($rem)),
+            $this->renderHandleList($rem));
         }
     }
 

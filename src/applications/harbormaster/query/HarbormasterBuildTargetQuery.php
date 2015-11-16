@@ -6,6 +6,7 @@ final class HarbormasterBuildTargetQuery
   private $ids;
   private $phids;
   private $buildPHIDs;
+  private $buildGenerations;
   private $needBuildSteps;
 
   public function withIDs(array $ids) {
@@ -23,53 +24,56 @@ final class HarbormasterBuildTargetQuery
     return $this;
   }
 
+  public function withBuildGenerations(array $build_generations) {
+    $this->buildGenerations = $build_generations;
+    return $this;
+  }
+
   public function needBuildSteps($need_build_steps) {
     $this->needBuildSteps = $need_build_steps;
     return $this;
   }
 
-  protected function loadPage() {
-    $table = new HarbormasterBuildTarget();
-    $conn_r = $table->establishConnection('r');
-
-    $data = queryfx_all(
-      $conn_r,
-      'SELECT * FROM %T %Q %Q %Q',
-      $table->getTableName(),
-      $this->buildWhereClause($conn_r),
-      $this->buildOrderClause($conn_r),
-      $this->buildLimitClause($conn_r));
-
-    return $table->loadAllFromArray($data);
+  public function newResultObject() {
+    return new HarbormasterBuildTarget();
   }
 
-  private function buildWhereClause(AphrontDatabaseConnection $conn_r) {
-    $where = array();
+  protected function loadPage() {
+    return $this->loadStandardPage($this->newResultObject());
+  }
 
-    if ($this->ids) {
+  protected function buildWhereClauseParts(AphrontDatabaseConnection $conn) {
+    $where = parent::buildWhereClauseParts($conn);
+
+    if ($this->ids !== null) {
       $where[] = qsprintf(
-        $conn_r,
+        $conn,
         'id IN (%Ld)',
         $this->ids);
     }
 
-    if ($this->phids) {
+    if ($this->phids !== null) {
       $where[] = qsprintf(
-        $conn_r,
+        $conn,
         'phid in (%Ls)',
         $this->phids);
     }
 
-    if ($this->buildPHIDs) {
+    if ($this->buildPHIDs !== null) {
       $where[] = qsprintf(
-        $conn_r,
+        $conn,
         'buildPHID in (%Ls)',
         $this->buildPHIDs);
     }
 
-    $where[] = $this->buildPagingClause($conn_r);
+    if ($this->buildGenerations !== null) {
+      $where[] = qsprintf(
+        $conn,
+        'buildGeneration in (%Ld)',
+        $this->buildGenerations);
+    }
 
-    return $this->formatWhereClause($where);
+    return $where;
   }
 
   protected function didFilterPage(array $page) {
@@ -90,7 +94,7 @@ final class HarbormasterBuildTargetQuery
 
       foreach ($page as $target) {
         $target->attachBuildStep(
-          $steps[$target->getBuildStepPHID()]);
+          idx($steps, $target->getBuildStepPHID()));
       }
     }
 

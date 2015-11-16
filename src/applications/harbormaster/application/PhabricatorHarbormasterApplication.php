@@ -14,8 +14,8 @@ final class PhabricatorHarbormasterApplication extends PhabricatorApplication {
     return pht('Build/CI');
   }
 
-  public function getIconName() {
-    return 'harbormaster';
+  public function getFontIcon() {
+    return 'fa-ship';
   }
 
   public function getTitleGlyph() {
@@ -36,13 +36,18 @@ final class PhabricatorHarbormasterApplication extends PhabricatorApplication {
     );
   }
 
-  public function isBeta() {
-    return true;
-  }
-
   public function getRemarkupRules() {
     return array(
       new HarbormasterRemarkupRule(),
+    );
+  }
+
+  public function getHelpDocumentationArticles(PhabricatorUser $viewer) {
+    return array(
+      array(
+        'name' => pht('Harbormaster User Guide'),
+        'href' => PhabricatorEnv::getDoclink('Harbormaster User Guide'),
+      ),
     );
   }
 
@@ -56,16 +61,18 @@ final class PhabricatorHarbormasterApplication extends PhabricatorApplication {
           'add/(?:(?P<id>\d+)/)?' => 'HarbormasterStepAddController',
           'new/(?P<plan>\d+)/(?P<class>[^/]+)/'
             => 'HarbormasterStepEditController',
+          'view/(?P<id>\d+)/' => 'HarbormasterStepViewController',
           'edit/(?:(?P<id>\d+)/)?' => 'HarbormasterStepEditController',
           'delete/(?:(?P<id>\d+)/)?' => 'HarbormasterStepDeleteController',
         ),
         'buildable/' => array(
-          '(?P<id>\d+)/(?P<action>stop|resume|restart)/'
+          '(?P<id>\d+)/(?P<action>pause|resume|restart|abort)/'
             => 'HarbormasterBuildableActionController',
         ),
         'build/' => array(
           '(?P<id>\d+)/' => 'HarbormasterBuildViewController',
-          '(?P<action>stop|resume|restart)/(?P<id>\d+)/(?:(?P<via>[^/]+)/)?'
+          '(?P<action>pause|resume|restart|abort)/'.
+            '(?P<id>\d+)/(?:(?P<via>[^/]+)/)?'
             => 'HarbormasterBuildActionController',
         ),
         'plan/' => array(
@@ -77,14 +84,28 @@ final class PhabricatorHarbormasterApplication extends PhabricatorApplication {
           'run/(?P<id>\d+)/' => 'HarbormasterPlanRunController',
           '(?P<id>\d+)/' => 'HarbormasterPlanViewController',
         ),
+        'unit/' => array(
+          '(?P<id>\d+)/' => 'HarbormasterUnitMessagesController',
+        ),
+        'lint/' => array(
+          '(?P<id>\d+)/' => 'HarbormasterLintMessagesController',
+        ),
       ),
     );
   }
 
-  public function getCustomCapabilities() {
+  protected function getCustomCapabilities() {
     return array(
-      HarbormasterManagePlansCapability::CAPABILITY => array(
-        'caption' => pht('Can create and manage build plans.'),
+      HarbormasterCreatePlansCapability::CAPABILITY => array(
+        'default' => PhabricatorPolicies::POLICY_ADMIN,
+      ),
+      HarbormasterBuildPlanDefaultViewCapability::CAPABILITY => array(
+        'template' => HarbormasterBuildPlanPHIDType::TYPECONST,
+        'capability' => PhabricatorPolicyCapability::CAN_VIEW,
+      ),
+      HarbormasterBuildPlanDefaultEditCapability::CAPABILITY => array(
+        'template' => HarbormasterBuildPlanPHIDType::TYPECONST,
+        'capability' => PhabricatorPolicyCapability::CAN_EDIT,
         'default' => PhabricatorPolicies::POLICY_ADMIN,
       ),
     );

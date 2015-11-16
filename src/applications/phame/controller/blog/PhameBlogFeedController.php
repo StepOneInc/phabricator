@@ -1,31 +1,25 @@
 <?php
 
-final class PhameBlogFeedController extends PhameController {
-
-  private $id;
+final class PhameBlogFeedController extends PhameBlogController {
 
   public function shouldRequireLogin() {
     return false;
   }
 
-  public function willProcessRequest(array $data) {
-    $this->id = $data['id'];
-  }
-
-  public function processRequest() {
-    $request = $this->getRequest();
-    $user = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
+    $id = $request->getURIData('id');
 
     $blog = id(new PhameBlogQuery())
-      ->setViewer($user)
-      ->withIDs(array($this->id))
+      ->setViewer($viewer)
+      ->withIDs(array($id))
       ->executeOne();
     if (!$blog) {
       return new Aphront404Response();
     }
 
     $posts = id(new PhamePostQuery())
-      ->setViewer($user)
+      ->setViewer($viewer)
       ->withBlogPHIDs(array($blog->getPHID()))
       ->withVisibility(PhamePost::VISIBILITY_PUBLISHED)
       ->execute();
@@ -39,7 +33,7 @@ final class PhameBlogFeedController extends PhameController {
       array(
         'rel' => 'self',
         'type' => 'application/atom+xml',
-        'href' => $blog_uri
+        'href' => $blog_uri,
       ));
 
     $updated = $blog->getDateModified();
@@ -53,7 +47,7 @@ final class PhameBlogFeedController extends PhameController {
       $content[] = phutil_tag('subtitle', array(), $description);
     }
 
-    $engine = id(new PhabricatorMarkupEngine())->setViewer($user);
+    $engine = id(new PhabricatorMarkupEngine())->setViewer($viewer);
     foreach ($posts as $post) {
       $engine->addObject($post, PhamePost::MARKUP_FIELD_BODY);
     }
@@ -61,7 +55,7 @@ final class PhameBlogFeedController extends PhameController {
 
     $blogger_phids = mpull($posts, 'getBloggerPHID');
     $bloggers = id(new PhabricatorHandleQuery())
-      ->setViewer($user)
+      ->setViewer($viewer)
       ->withPHIDs($blogger_phids)
       ->execute();
 

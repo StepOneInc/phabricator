@@ -10,12 +10,16 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
   protected $details;
   protected $variables;
   protected $targetStatus;
+  protected $dateStarted;
+  protected $dateCompleted;
+  protected $buildGeneration;
 
   const STATUS_PENDING = 'target/pending';
   const STATUS_BUILDING = 'target/building';
   const STATUS_WAITING = 'target/waiting';
   const STATUS_PASSED = 'target/passed';
   const STATUS_FAILED = 'target/failed';
+  const STATUS_ABORTED = 'target/aborted';
 
   private $build = self::ATTACHABLE;
   private $buildStep = self::ATTACHABLE;
@@ -33,6 +37,8 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
         return pht('Passed');
       case self::STATUS_FAILED:
         return pht('Failed');
+      case self::STATUS_ABORTED:
+        return pht('Aborted');
       default:
         return pht('Unknown');
     }
@@ -49,6 +55,8 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
         return PHUIStatusItemView::ICON_ACCEPT;
       case self::STATUS_FAILED:
         return PHUIStatusItemView::ICON_REJECT;
+      case self::STATUS_ABORTED:
+        return PHUIStatusItemView::ICON_MINUS;
       default:
         return PHUIStatusItemView::ICON_QUESTION;
     }
@@ -63,6 +71,7 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
       case self::STATUS_PASSED:
         return 'green';
       case self::STATUS_FAILED:
+      case self::STATUS_ABORTED:
         return 'red';
       default:
         return 'bluegrey';
@@ -80,16 +89,33 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
       ->setClassName($build_step->getClassName())
       ->setDetails($build_step->getDetails())
       ->setTargetStatus(self::STATUS_PENDING)
-      ->setVariables($variables);
+      ->setVariables($variables)
+      ->setBuildGeneration($build->getBuildGeneration());
   }
 
-  public function getConfiguration() {
+  protected function getConfiguration() {
     return array(
       self::CONFIG_AUX_PHID => true,
       self::CONFIG_SERIALIZATION => array(
         'details' => self::SERIALIZATION_JSON,
         'variables' => self::SERIALIZATION_JSON,
-      )
+      ),
+      self::CONFIG_COLUMN_SCHEMA => array(
+        'className' => 'text255',
+        'targetStatus' => 'text64',
+        'dateStarted' => 'epoch?',
+        'dateCompleted' => 'epoch?',
+        'buildGeneration' => 'uint32',
+
+        // T6203/NULLABILITY
+        // This should not be nullable.
+        'name' => 'text255?',
+      ),
+      self::CONFIG_KEY_SCHEMA => array(
+        'key_build' => array(
+          'columns' => array('buildPHID', 'buildStepPHID'),
+        ),
+      ),
     ) + parent::getConfiguration();
   }
 
@@ -107,7 +133,7 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
     return $this->assertAttached($this->build);
   }
 
-  public function attachBuildStep(HarbormasterBuildStep $step) {
+  public function attachBuildStep(HarbormasterBuildStep $step = null) {
     $this->buildStep = $step;
     return $this;
   }
@@ -149,8 +175,16 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
     return $this->implementation;
   }
 
+  public function isAutotarget() {
+    try {
+      return (bool)$this->getImplementation()->getBuildStepAutotargetPlanKey();
+    } catch (Exception $e) {
+      return false;
+    }
+  }
+
   public function getName() {
-    if (strlen($this->name)) {
+    if (strlen($this->name) && !$this->isAutotarget()) {
       return $this->name;
     }
 
@@ -167,6 +201,90 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
     );
   }
 
+  public function createArtifact(
+    PhabricatorUser $actor,
+    $artifact_key,
+    $artifact_type,
+    array $artifact_data) {
+
+    $impl = HarbormasterArtifact::getArtifactType($artifact_type);
+    if (!$impl) {
+      throw new Exception(
+        pht(
+          'There is no implementation available for artifacts of type "%s".',
+          $artifact_type));
+    }
+
+    $impl->validateArtifactData($artifact_data);
+
+    $artifact = HarbormasterBuildArtifact::initializeNewBuildArtifact($this)
+      ->setArtifactKey($artifact_key)
+      ->setArtifactType($artifact_type)
+      ->setArtifactData($artifact_data);
+
+    $impl = $artifact->getArtifactImplementation();
+    $impl->willCreateArtifact($actor);
+
+    return $artifact->save();
+  }
+
+  public function loadArtifact($artifact_key) {
+    $indexes = array();
+
+    $indexes[] = HarbormasterBuildArtifact::getArtifactIndex(
+      $this,
+      $artifact_key);
+
+    $artifact = id(new HarbormasterBuildArtifactQuery())
+      ->setViewer(PhabricatorUser::getOmnipotentUser())
+      ->withArtifactIndexes($indexes)
+      ->executeOne();
+    if ($artifact === null) {
+      throw new Exception(
+        pht(
+          'Artifact "%s" not found!',
+          $artifact_key));
+    }
+
+    return $artifact;
+  }
+
+  public function newLog($log_source, $log_type) {
+    $log_source = id(new PhutilUTF8StringTruncator())
+      ->setMaximumBytes(250)
+      ->truncateString($log_source);
+
+    $log = HarbormasterBuildLog::initializeNewBuildLog($this)
+      ->setLogSource($log_source)
+      ->setLogType($log_type);
+
+    $log->start();
+
+    return $log;
+  }
+
+  public function getFieldValue($key) {
+    $field_list = PhabricatorCustomField::getObjectFields(
+      $this->getBuildStep(),
+      PhabricatorCustomField::ROLE_VIEW);
+
+    $fields = $field_list->getFields();
+    $full_key = "std:harbormaster:core:{$key}";
+
+    $field = idx($fields, $full_key);
+    if (!$field) {
+      throw new Exception(
+        pht(
+          'Unknown build step field "%s"!',
+          $key));
+    }
+
+    $field = clone $field;
+    $field->setValueFromStorage($this->getDetail($key));
+    return $field->getBuildTargetFieldValue();
+  }
+
+
 
 /* -(  Status  )------------------------------------------------------------- */
 
@@ -175,6 +293,7 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
     switch ($this->getTargetStatus()) {
       case self::STATUS_PASSED:
       case self::STATUS_FAILED:
+      case self::STATUS_ABORTED:
         return true;
     }
 
@@ -185,6 +304,7 @@ final class HarbormasterBuildTarget extends HarbormasterDAO
   public function isFailed() {
     switch ($this->getTargetStatus()) {
       case self::STATUS_FAILED:
+      case self::STATUS_ABORTED:
         return true;
     }
 

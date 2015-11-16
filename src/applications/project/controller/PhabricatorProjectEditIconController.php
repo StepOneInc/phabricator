@@ -3,30 +3,33 @@
 final class PhabricatorProjectEditIconController
   extends PhabricatorProjectController {
 
-  private $id;
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
+    $id = $request->getURIData('id');
 
-  public function willProcessRequest(array $data) {
-    $this->id = $data['id'];
-  }
+    if ($id) {
+      $project = id(new PhabricatorProjectQuery())
+        ->setViewer($viewer)
+        ->withIDs(array($id))
+        ->requireCapabilities(
+          array(
+            PhabricatorPolicyCapability::CAN_VIEW,
+            PhabricatorPolicyCapability::CAN_EDIT,
+          ))
+          ->executeOne();
+      if (!$project) {
+        return new Aphront404Response();
+      }
+      $cancel_uri = $this->getApplicationURI('profile/'.$project->getID().'/');
+      $project_icon = $project->getIcon();
+    } else {
+      $this->requireApplicationCapability(
+        ProjectCreateProjectsCapability::CAPABILITY);
 
-  public function processRequest() {
-    $request = $this->getRequest();
-    $viewer = $request->getUser();
-
-    $project = id(new PhabricatorProjectQuery())
-      ->setViewer($viewer)
-      ->withIDs(array($this->id))
-      ->requireCapabilities(
-        array(
-          PhabricatorPolicyCapability::CAN_VIEW,
-          PhabricatorPolicyCapability::CAN_EDIT,
-        ))
-      ->executeOne();
-    if (!$project) {
-      return new Aphront404Response();
+      $cancel_uri = '/project/';
+      $project_icon = $request->getStr('value');
     }
 
-    $edit_uri = $this->getApplicationURI('edit/'.$project->getID().'/');
     require_celerity_resource('project-icon-css');
     Javelin::initBehavior('phabricator-tooltips');
 
@@ -55,7 +58,7 @@ final class PhabricatorProjectEditIconController
         ),
         pht('Choose "%s" Icon', $label));
 
-      if ($icon == $project->getIcon()) {
+      if ($icon == $project_icon) {
         $class_extra = ' selected';
       } else {
         $class_extra = null;
@@ -71,7 +74,7 @@ final class PhabricatorProjectEditIconController
           'sigil' => 'has-tooltip',
           'meta' => array(
             'tip' => $label,
-          )
+          ),
         ),
         array(
           $aural,
@@ -92,6 +95,6 @@ final class PhabricatorProjectEditIconController
     return $this->newDialog()
       ->setTitle(pht('Choose Project Icon'))
       ->appendChild($buttons)
-      ->addCancelButton($edit_uri);
+      ->addCancelButton($cancel_uri);
   }
 }

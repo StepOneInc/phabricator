@@ -1,11 +1,26 @@
 <?php
 
-abstract class HarbormasterBuildStepImplementation {
+/**
+ * @task autotarget Automatic Targets
+ */
+abstract class HarbormasterBuildStepImplementation extends Phobject {
+
+  private $settings;
+  private $currentWorkerTaskID;
+
+  public function setCurrentWorkerTaskID($id) {
+    $this->currentWorkerTaskID = $id;
+    return $this;
+  }
+
+  public function getCurrentWorkerTaskID() {
+    return $this->currentWorkerTaskID;
+  }
 
   public static function getImplementations() {
-    return id(new PhutilSymbolLoader())
-      ->setAncestorClass('HarbormasterBuildStepImplementation')
-      ->loadObjects();
+    return id(new PhutilClassMapQuery())
+      ->setAncestorClass(__CLASS__)
+      ->execute();
   }
 
   public static function getImplementation($class) {
@@ -35,6 +50,10 @@ abstract class HarbormasterBuildStepImplementation {
    * The name of the implementation.
    */
   abstract public function getName();
+
+  public function getBuildStepGroupKey() {
+    return HarbormasterOtherBuildStepGroup::GROUPKEY;
+  }
 
   /**
    * The generic description of the implementation.
@@ -72,7 +91,7 @@ abstract class HarbormasterBuildStepImplementation {
    * Loads the settings for this build step implementation from a build
    * step or target.
    */
-  public final function loadSettings($build_object) {
+  final public function loadSettings($build_object) {
     $this->settings = $build_object->getDetails();
     return $this;
   }
@@ -175,7 +194,7 @@ abstract class HarbormasterBuildStepImplementation {
    * @return string String with variables replaced safely into it.
    */
   protected function mergeVariables($function, $pattern, array $variables) {
-    $regexp = '/\\$\\{(?P<name>[a-z\\.]+)\\}/';
+    $regexp = '@\\$\\{(?P<name>[a-z\\./-]+)\\}@';
 
     $matches = null;
     preg_match_all($regexp, $pattern, $matches);
@@ -220,6 +239,46 @@ abstract class HarbormasterBuildStepImplementation {
     }
 
     return (bool)$target->getDetail('builtin.wait-for-message');
+  }
+
+  protected function shouldAbort(
+    HarbormasterBuild $build,
+    HarbormasterBuildTarget $target) {
+
+    return $build->getBuildGeneration() !== $target->getBuildGeneration();
+  }
+
+  protected function resolveFutures(
+    HarbormasterBuild $build,
+    HarbormasterBuildTarget $target,
+    array $futures) {
+
+    $futures = new FutureIterator($futures);
+    foreach ($futures->setUpdateInterval(5) as $key => $future) {
+      if ($future === null) {
+        $build->reload();
+        if ($this->shouldAbort($build, $target)) {
+          throw new HarbormasterBuildAbortedException();
+        }
+      }
+    }
+
+  }
+
+
+/* -(  Automatic Targets  )-------------------------------------------------- */
+
+
+  public function getBuildStepAutotargetStepKey() {
+    return null;
+  }
+
+  public function getBuildStepAutotargetPlanKey() {
+    throw new PhutilMethodNotImplementedException();
+  }
+
+  public function shouldRequireAutotargeting() {
+    return false;
   }
 
 }

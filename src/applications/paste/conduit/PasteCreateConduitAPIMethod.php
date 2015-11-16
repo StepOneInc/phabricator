@@ -7,10 +7,10 @@ final class PasteCreateConduitAPIMethod extends PasteConduitAPIMethod {
   }
 
   public function getMethodDescription() {
-    return 'Create a new paste.';
+    return pht('Create a new paste.');
   }
 
-  public function defineParamTypes() {
+  protected function defineParamTypes() {
     return array(
       'content'   => 'required string',
       'title'     => 'optional string',
@@ -18,13 +18,13 @@ final class PasteCreateConduitAPIMethod extends PasteConduitAPIMethod {
     );
   }
 
-  public function defineReturnType() {
+  protected function defineReturnType() {
     return 'nonempty dict';
   }
 
-  public function defineErrorTypes() {
+  protected function defineErrorTypes() {
     return array(
-      'ERR-NO-PASTE' => 'Paste may not be empty.',
+      'ERR-NO-PASTE' => pht('Paste may not be empty.'),
     );
   }
 
@@ -37,23 +37,18 @@ final class PasteCreateConduitAPIMethod extends PasteConduitAPIMethod {
       throw new ConduitException('ERR-NO-PASTE');
     }
 
-    $title = nonempty($title, 'Masterwork From Distant Lands');
+    $title = nonempty($title, pht('Masterwork From Distant Lands'));
     $language = nonempty($language, '');
 
     $viewer = $request->getUser();
 
     $paste = PhabricatorPaste::initializeNewPaste($viewer);
 
-    $file = PhabricatorPasteEditor::initializeFileForPaste(
-      $viewer,
-      $title,
-      $content);
-
     $xactions = array();
 
     $xactions[] = id(new PhabricatorPasteTransaction())
       ->setTransactionType(PhabricatorPasteTransaction::TYPE_CONTENT)
-      ->setNewValue($file->getPHID());
+      ->setNewValue($content);
 
     $xactions[] = id(new PhabricatorPasteTransaction())
       ->setTransactionType(PhabricatorPasteTransaction::TYPE_TITLE)
@@ -65,6 +60,7 @@ final class PasteCreateConduitAPIMethod extends PasteConduitAPIMethod {
 
     $editor = id(new PhabricatorPasteEditor())
       ->setActor($viewer)
+      ->setContinueOnNoEffect(true)
       ->setContentSourceFromConduitRequest($request);
 
     $xactions = $editor->applyTransactions($paste, $xactions);

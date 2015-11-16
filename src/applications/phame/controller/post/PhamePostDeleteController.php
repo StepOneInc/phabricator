@@ -1,20 +1,13 @@
 <?php
 
-final class PhamePostDeleteController extends PhameController {
+final class PhamePostDeleteController extends PhamePostController {
 
-  private $id;
-
-  public function willProcessRequest(array $data) {
-    $this->id = $data['id'];
-  }
-
-  public function processRequest() {
-    $request = $this->getRequest();
-    $user = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
 
     $post = id(new PhamePostQuery())
-      ->setViewer($user)
-      ->withIDs(array($this->id))
+      ->setViewer($viewer)
+      ->withIDs(array($request->getURIData('id')))
       ->requireCapabilities(
         array(
           PhabricatorPolicyCapability::CAN_EDIT,
@@ -33,7 +26,7 @@ final class PhamePostDeleteController extends PhameController {
     $cancel_uri = $this->getApplicationURI('/post/view/'.$post->getID().'/');
 
     $dialog = id(new AphrontDialogView())
-      ->setUser($user)
+      ->setUser($viewer)
       ->setTitle(pht('Delete Post?'))
       ->appendChild(
         pht(

@@ -2,13 +2,15 @@
 
 final class PonderQuestion extends PonderDAO
   implements
+    PhabricatorApplicationTransactionInterface,
     PhabricatorMarkupInterface,
-    PonderVotableInterface,
     PhabricatorSubscribableInterface,
     PhabricatorFlaggableInterface,
     PhabricatorPolicyInterface,
     PhabricatorTokenReceiverInterface,
-    PhabricatorProjectInterface {
+    PhabricatorProjectInterface,
+    PhabricatorDestructibleInterface,
+    PhabricatorSpacesInterface {
 
   const MARKUP_FIELD_CONTENT = 'markup:content';
 
@@ -18,20 +20,64 @@ final class PonderQuestion extends PonderDAO
   protected $authorPHID;
   protected $status;
   protected $content;
+  protected $answerWiki;
   protected $contentSource;
+  protected $viewPolicy;
+  protected $spacePHID;
 
-  protected $voteCount;
   protected $answerCount;
-  protected $heat;
   protected $mailKey;
 
   private $answers;
-  private $vote;
   private $comments;
 
-  public function getConfiguration() {
+  private $projectPHIDs = self::ATTACHABLE;
+
+  public static function initializeNewQuestion(PhabricatorUser $actor) {
+    $app = id(new PhabricatorApplicationQuery())
+      ->setViewer($actor)
+      ->withClasses(array('PhabricatorPonderApplication'))
+      ->executeOne();
+
+    $view_policy = $app->getPolicy(
+      PonderDefaultViewCapability::CAPABILITY);
+
+    return id(new PonderQuestion())
+      ->setAuthorPHID($actor->getPHID())
+      ->setViewPolicy($view_policy)
+      ->setStatus(PonderQuestionStatus::STATUS_OPEN)
+      ->setAnswerCount(0)
+      ->setSpacePHID($actor->getDefaultSpacePHID());
+  }
+
+  protected function getConfiguration() {
     return array(
       self::CONFIG_AUX_PHID => true,
+      self::CONFIG_COLUMN_SCHEMA => array(
+        'title' => 'text255',
+        'status' => 'text32',
+        'content' => 'text',
+        'answerWiki' => 'text',
+        'answerCount' => 'uint32',
+        'mailKey' => 'bytes20',
+
+        // T6203/NULLABILITY
+        // This should always exist.
+        'contentSource' => 'text?',
+      ),
+      self::CONFIG_KEY_SCHEMA => array(
+        'key_phid' => null,
+        'phid' => array(
+          'columns' => array('phid'),
+          'unique' => true,
+        ),
+        'authorPHID' => array(
+          'columns' => array('authorPHID'),
+        ),
+        'status' => array(
+          'columns' => array('status'),
+        ),
+      ),
     ) + parent::getConfiguration();
   }
 
@@ -46,70 +92,6 @@ final class PonderQuestion extends PonderDAO
 
   public function getContentSource() {
     return PhabricatorContentSource::newFromSerialized($this->contentSource);
-  }
-
-  public function attachRelated() {
-    $this->answers = $this->loadRelatives(new PonderAnswer(), 'questionID');
-    $qa_phids = mpull($this->answers, 'getPHID') + array($this->getPHID());
-
-    if ($qa_phids) {
-      $comments = id(new PonderCommentQuery())
-        ->withTargetPHIDs($qa_phids)
-        ->execute();
-
-      $comments = mgroup($comments, 'getTargetPHID');
-    } else {
-      $comments = array();
-    }
-
-    $this->setComments(idx($comments, $this->getPHID(), array()));
-    foreach ($this->answers as $answer) {
-      $answer->attachQuestion($this);
-      $answer->setComments(idx($comments, $answer->getPHID(), array()));
-    }
-  }
-
-  public function attachVotes($user_phid) {
-    $qa_phids = mpull($this->answers, 'getPHID') + array($this->getPHID());
-
-    $edges = id(new PhabricatorEdgeQuery())
-      ->withSourcePHIDs(array($user_phid))
-      ->withDestinationPHIDs($qa_phids)
-      ->withEdgeTypes(
-        array(
-          PhabricatorEdgeConfig::TYPE_VOTING_USER_HAS_QUESTION,
-          PhabricatorEdgeConfig::TYPE_VOTING_USER_HAS_ANSWER
-        ))
-      ->needEdgeData(true)
-      ->execute();
-
-    $question_edge =
-      $edges[$user_phid][PhabricatorEdgeConfig::TYPE_VOTING_USER_HAS_QUESTION];
-    $answer_edges =
-      $edges[$user_phid][PhabricatorEdgeConfig::TYPE_VOTING_USER_HAS_ANSWER];
-    $edges = null;
-
-    $this->setUserVote(idx($question_edge, $this->getPHID()));
-    foreach ($this->answers as $answer) {
-      $answer->setUserVote(idx($answer_edges, $answer->getPHID()));
-    }
-  }
-
-  public function setUserVote($vote) {
-    $this->vote = $vote['data'];
-    if (!$this->vote) {
-      $this->vote = PonderVote::VOTE_NONE;
-    }
-    return $this;
-  }
-
-  public function attachUserVote($user_phid, $vote) {
-    $this->vote = $vote;
-    return $this;
-  }
-
-  public function getUserVote() {
-    return $this->vote;
   }
 
   public function setComments($comments) {
@@ -131,9 +113,42 @@ final class PonderQuestion extends PonderDAO
     return $this->answers;
   }
 
+  public function getProjectPHIDs() {
+    return $this->assertAttached($this->projectPHIDs);
+  }
+
+  public function attachProjectPHIDs(array $phids) {
+    $this->projectPHIDs = $phids;
+    return $this;
+  }
+
   public function getMarkupField() {
     return self::MARKUP_FIELD_CONTENT;
   }
+
+
+/* -(  PhabricatorApplicationTransactionInterface  )------------------------- */
+
+
+  public function getApplicationTransactionEditor() {
+    return new PonderQuestionEditor();
+  }
+
+  public function getApplicationTransactionObject() {
+    return $this;
+  }
+
+  public function getApplicationTransactionTemplate() {
+    return new PonderQuestionTransaction();
+  }
+
+  public function willRenderTimeline(
+    PhabricatorApplicationTransactionView $timeline,
+    AphrontRequest $request) {
+
+    return $timeline;
+  }
+
 
   // Markup interface
 
@@ -160,15 +175,6 @@ final class PonderQuestion extends PonderDAO
 
   public function shouldUseMarkupCache($field) {
     return (bool)$this->getID();
-  }
-
-  // votable interface
-  public function getUserVoteEdgeType() {
-    return PhabricatorEdgeConfig::TYPE_VOTING_USER_HAS_QUESTION;
-  }
-
-  public function getVotablePHID() {
-    return $this->getPHID();
   }
 
   public function save() {
@@ -200,25 +206,37 @@ final class PonderQuestion extends PonderDAO
   }
 
   public function getPolicy($capability) {
-    $policy = PhabricatorPolicies::POLICY_NOONE;
-
     switch ($capability) {
       case PhabricatorPolicyCapability::CAN_VIEW:
-        $policy = PhabricatorPolicies::POLICY_USER;
-        break;
+        return $this->getViewPolicy();
+      case PhabricatorPolicyCapability::CAN_EDIT:
+        $app = PhabricatorApplication::getByClass(
+          'PhabricatorPonderApplication');
+        return $app->getPolicy(PonderModerateCapability::CAPABILITY);
     }
-
-    return $policy;
   }
 
   public function hasAutomaticCapability($capability, PhabricatorUser $viewer) {
+    if ($capability == PhabricatorPolicyCapability::CAN_VIEW) {
+      if (PhabricatorPolicyFilter::hasCapability(
+        $viewer, $this, PhabricatorPolicyCapability::CAN_EDIT)) {
+        return true;
+      }
+    }
     return ($viewer->getPHID() == $this->getAuthorPHID());
   }
 
 
   public function describeAutomaticCapability($capability) {
-    return pht(
-      'The user who asked a question can always view and edit it.');
+    $out = array();
+    $out[] = pht('The user who asked a question can always view and edit it.');
+    switch ($capability) {
+      case PhabricatorPolicyCapability::CAN_VIEW:
+        $out[] = pht(
+          'A moderator can always view the question.');
+        break;
+    }
+    return $out;
   }
 
 
@@ -245,6 +263,32 @@ final class PonderQuestion extends PonderDAO
     return array(
       $this->getAuthorPHID(),
     );
+  }
+
+
+/* -(  PhabricatorDestructibleInterface  )----------------------------------- */
+
+  public function destroyObjectPermanently(
+    PhabricatorDestructionEngine $engine) {
+
+    $this->openTransaction();
+      $answers = id(new PonderAnswer())->loadAllWhere(
+        'questionID = %d',
+        $this->getID());
+      foreach ($answers as $answer) {
+        $engine->destroyObject($answer);
+      }
+
+      $this->delete();
+    $this->saveTransaction();
+  }
+
+
+/* -(  PhabricatorSpacesInterface  )----------------------------------------- */
+
+
+  public function getSpacePHID() {
+    return $this->spacePHID;
   }
 
 }

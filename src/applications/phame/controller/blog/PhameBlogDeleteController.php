@@ -1,20 +1,14 @@
 <?php
 
-final class PhameBlogDeleteController extends PhameController {
+final class PhameBlogDeleteController extends PhameBlogController {
 
-  private $id;
-
-  public function willProcessRequest(array $data) {
-    $this->id = $data['id'];
-  }
-
-  public function processRequest() {
-    $request = $this->getRequest();
-    $user = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
+    $id = $request->getURIData('id');
 
     $blog = id(new PhameBlogQuery())
-      ->setViewer($user)
-      ->withIDs(array($this->id))
+      ->setViewer($viewer)
+      ->withIDs(array($id))
       ->requireCapabilities(
         array(
           PhabricatorPolicyCapability::CAN_EDIT,
@@ -33,7 +27,7 @@ final class PhameBlogDeleteController extends PhameController {
     $cancel_uri = $this->getApplicationURI('/blog/view/'.$blog->getID().'/');
 
     $dialog = id(new AphrontDialogView())
-      ->setUser($user)
+      ->setUser($viewer)
       ->setTitle(pht('Delete Blog?'))
       ->appendChild(
         pht(

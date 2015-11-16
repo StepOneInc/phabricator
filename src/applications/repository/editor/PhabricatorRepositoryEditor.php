@@ -3,6 +3,14 @@
 final class PhabricatorRepositoryEditor
   extends PhabricatorApplicationTransactionEditor {
 
+  public function getEditorApplicationClass() {
+    return 'PhabricatorDiffusionApplication';
+  }
+
+  public function getEditorObjectsDescription() {
+    return pht('Repositories');
+  }
+
   public function getTransactionTypes() {
     $types = parent::getTransactionTypes();
 
@@ -32,6 +40,11 @@ final class PhabricatorRepositoryEditor
     $types[] = PhabricatorRepositoryTransaction::TYPE_CREDENTIAL;
     $types[] = PhabricatorRepositoryTransaction::TYPE_DANGEROUS;
     $types[] = PhabricatorRepositoryTransaction::TYPE_CLONE_NAME;
+    $types[] = PhabricatorRepositoryTransaction::TYPE_SERVICE;
+    $types[] = PhabricatorRepositoryTransaction::TYPE_SYMBOLS_LANGUAGE;
+    $types[] = PhabricatorRepositoryTransaction::TYPE_SYMBOLS_SOURCES;
+    $types[] = PhabricatorRepositoryTransaction::TYPE_STAGING_URI;
+    $types[] = PhabricatorRepositoryTransaction::TYPE_AUTOMATION_BLUEPRINTS;
 
     $types[] = PhabricatorTransactions::TYPE_EDGE;
     $types[] = PhabricatorTransactions::TYPE_VIEW_POLICY;
@@ -87,6 +100,16 @@ final class PhabricatorRepositoryEditor
         return $object->shouldAllowDangerousChanges();
       case PhabricatorRepositoryTransaction::TYPE_CLONE_NAME:
         return $object->getDetail('clone-name');
+      case PhabricatorRepositoryTransaction::TYPE_SERVICE:
+        return $object->getAlmanacServicePHID();
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_LANGUAGE:
+        return $object->getSymbolLanguages();
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_SOURCES:
+        return $object->getSymbolSources();
+      case PhabricatorRepositoryTransaction::TYPE_STAGING_URI:
+        return $object->getDetail('staging-uri');
+      case PhabricatorRepositoryTransaction::TYPE_AUTOMATION_BLUEPRINTS:
+        return $object->getDetail('automation.blueprintPHIDs', array());
     }
   }
 
@@ -119,6 +142,11 @@ final class PhabricatorRepositoryEditor
       case PhabricatorRepositoryTransaction::TYPE_CREDENTIAL:
       case PhabricatorRepositoryTransaction::TYPE_DANGEROUS:
       case PhabricatorRepositoryTransaction::TYPE_CLONE_NAME:
+      case PhabricatorRepositoryTransaction::TYPE_SERVICE:
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_LANGUAGE:
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_SOURCES:
+      case PhabricatorRepositoryTransaction::TYPE_STAGING_URI:
+      case PhabricatorRepositoryTransaction::TYPE_AUTOMATION_BLUEPRINTS:
         return $xaction->getNewValue();
       case PhabricatorRepositoryTransaction::TYPE_NOTIFY:
       case PhabricatorRepositoryTransaction::TYPE_AUTOCLOSE:
@@ -190,6 +218,23 @@ final class PhabricatorRepositoryEditor
       case PhabricatorRepositoryTransaction::TYPE_CLONE_NAME:
         $object->setDetail('clone-name', $xaction->getNewValue());
         return;
+      case PhabricatorRepositoryTransaction::TYPE_SERVICE:
+        $object->setAlmanacServicePHID($xaction->getNewValue());
+        return;
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_LANGUAGE:
+        $object->setDetail('symbol-languages', $xaction->getNewValue());
+        return;
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_SOURCES:
+        $object->setDetail('symbol-sources', $xaction->getNewValue());
+        return;
+      case PhabricatorRepositoryTransaction::TYPE_STAGING_URI:
+        $object->setDetail('staging-uri', $xaction->getNewValue());
+        return;
+      case PhabricatorRepositoryTransaction::TYPE_AUTOMATION_BLUEPRINTS:
+        $object->setDetail(
+          'automation.blueprintPHIDs',
+          $xaction->getNewValue());
+        return;
       case PhabricatorRepositoryTransaction::TYPE_ENCODING:
         // Make sure the encoding is valid by converting to UTF-8. This tests
         // that the user has mbstring installed, and also that they didn't type
@@ -227,7 +272,7 @@ final class PhabricatorRepositoryEditor
 
         $editor = new PhabricatorEdgeEditor();
 
-        $edge_type = PhabricatorEdgeConfig::TYPE_OBJECT_USES_CREDENTIAL;
+        $edge_type = PhabricatorObjectUsesCredentialsEdgeType::EDGECONST;
         $src_phid = $object->getPHID();
 
         if ($old_phid) {
@@ -240,34 +285,15 @@ final class PhabricatorRepositoryEditor
 
         $editor->save();
         break;
+      case PhabricatorRepositoryTransaction::TYPE_AUTOMATION_BLUEPRINTS:
+        DrydockAuthorization::applyAuthorizationChanges(
+          $this->getActor(),
+          $object->getPHID(),
+          $xaction->getOldValue(),
+          $xaction->getNewValue());
+        break;
     }
 
-  }
-
-  protected function mergeTransactions(
-    PhabricatorApplicationTransaction $u,
-    PhabricatorApplicationTransaction $v) {
-
-    $type = $u->getTransactionType();
-    switch ($type) {
-    }
-
-    return parent::mergeTransactions($u, $v);
-  }
-
-  protected function transactionHasEffect(
-    PhabricatorLiskDAO $object,
-    PhabricatorApplicationTransaction $xaction) {
-
-    $old = $xaction->getOldValue();
-    $new = $xaction->getNewValue();
-
-    $type = $xaction->getTransactionType();
-    switch ($type) {
-
-    }
-
-    return parent::transactionHasEffect($object, $xaction);
   }
 
   protected function requireCapabilities(
@@ -301,6 +327,11 @@ final class PhabricatorRepositoryEditor
       case PhabricatorRepositoryTransaction::TYPE_CREDENTIAL:
       case PhabricatorRepositoryTransaction::TYPE_DANGEROUS:
       case PhabricatorRepositoryTransaction::TYPE_CLONE_NAME:
+      case PhabricatorRepositoryTransaction::TYPE_SERVICE:
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_SOURCES:
+      case PhabricatorRepositoryTransaction::TYPE_SYMBOLS_LANGUAGE:
+      case PhabricatorRepositoryTransaction::TYPE_STAGING_URI:
+      case PhabricatorRepositoryTransaction::TYPE_AUTOMATION_BLUEPRINTS:
         PhabricatorPolicyFilter::requireCapability(
           $this->requireActor(),
           $object,
@@ -317,6 +348,52 @@ final class PhabricatorRepositoryEditor
     $errors = parent::validateTransaction($object, $type, $xactions);
 
     switch ($type) {
+      case PhabricatorRepositoryTransaction::TYPE_AUTOCLOSE:
+      case PhabricatorRepositoryTransaction::TYPE_TRACK_ONLY:
+        foreach ($xactions as $xaction) {
+          foreach ($xaction->getNewValue() as $pattern) {
+            // Check for invalid regular expressions.
+            $regexp = PhabricatorRepository::extractBranchRegexp($pattern);
+            if ($regexp !== null) {
+              $ok = @preg_match($regexp, '');
+              if ($ok === false) {
+                $error = new PhabricatorApplicationTransactionValidationError(
+                  $type,
+                  pht('Invalid'),
+                  pht(
+                    'Expression "%s" is not a valid regular expression. Note '.
+                    'that you must include delimiters.',
+                    $regexp),
+                  $xaction);
+                $errors[] = $error;
+                continue;
+              }
+            }
+
+            // Check for formatting mistakes like `regex(...)` instead of
+            // `regexp(...)`.
+            $matches = null;
+            if (preg_match('/^([^(]+)\\(.*\\)\z/', $pattern, $matches)) {
+              switch ($matches[1]) {
+                case 'regexp':
+                  break;
+                default:
+                  $error = new PhabricatorApplicationTransactionValidationError(
+                    $type,
+                    pht('Invalid'),
+                    pht(
+                      'Matching function "%s(...)" is not recognized. Valid '.
+                      'functions are: regexp(...).',
+                      $matches[1]),
+                    $xaction);
+                  $errors[] = $error;
+                  break;
+              }
+            }
+          }
+        }
+        break;
+
       case PhabricatorRepositoryTransaction::TYPE_REMOTE_URI:
         foreach ($xactions as $xaction) {
           $new_uri = $xaction->getNewValue();
@@ -344,6 +421,29 @@ final class PhabricatorRepositoryEditor
               pht(
                 'The selected credential does not exist, or you do not have '.
                 'permission to use it.'),
+              $xaction);
+          }
+        }
+        break;
+
+      case PhabricatorRepositoryTransaction::TYPE_AUTOMATION_BLUEPRINTS:
+        foreach ($xactions as $xaction) {
+          $old = nonempty($xaction->getOldValue(), array());
+          $new = nonempty($xaction->getNewValue(), array());
+
+          $add = array_diff($new, $old);
+
+          $invalid = PhabricatorObjectQuery::loadInvalidPHIDsForViewer(
+            $this->getActor(),
+            $add);
+          if ($invalid) {
+            $errors[] = new PhabricatorApplicationTransactionValidationError(
+              $type,
+              pht('Invalid'),
+              pht(
+                'Some of the selected automation blueprints are invalid '.
+                'or restricted: %s.',
+                implode(', ', $invalid)),
               $xaction);
           }
         }

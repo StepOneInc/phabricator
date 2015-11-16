@@ -1,6 +1,8 @@
 <?php
 
-final class AphrontDialogView extends AphrontView {
+final class AphrontDialogView
+  extends AphrontView
+  implements AphrontResponseProducerInterface {
 
   private $title;
   private $shortTitle;
@@ -12,7 +14,6 @@ final class AphrontDialogView extends AphrontView {
   private $class;
   private $renderAsForm = true;
   private $formID;
-  private $headerColor = PHUIActionHeaderView::HEADER_LIGHTBLUE;
   private $footers = array();
   private $isStandalone;
   private $method = 'POST';
@@ -22,6 +23,7 @@ final class AphrontDialogView extends AphrontView {
   private $errors = array();
   private $flush;
   private $validationException;
+  private $objectList;
 
 
   const WIDTH_DEFAULT = 'default';
@@ -131,9 +133,11 @@ final class AphrontDialogView extends AphrontView {
     return $this;
   }
 
-  public function setHeaderColor($color) {
-    $this->headerColor = $color;
-    return $this;
+  public function setObjectList(PHUIObjectItemListView $list) {
+    $this->objectList = true;
+    $box = id(new PHUIObjectBoxView())
+      ->setObjectList($list);
+    return $this->appendChild($box);
   }
 
   public function appendParagraph($paragraph) {
@@ -144,6 +148,29 @@ final class AphrontDialogView extends AphrontView {
           'class' => 'aphront-dialog-view-paragraph',
         ),
         $paragraph));
+  }
+
+  public function appendList(array $items) {
+    $listitems = array();
+    foreach ($items as $item) {
+      $listitems[] = phutil_tag(
+        'li',
+        array(
+          'class' => 'remarkup-list-item',
+        ),
+        $item);
+    }
+    return $this->appendChild(
+      phutil_tag(
+        'ul',
+        array(
+          'class' => 'remarkup-list',
+        ),
+        $listitems));
+  }
+
+  public function appendForm(AphrontFormView $form) {
+    return $this->appendChild($form->buildLayoutView());
   }
 
   public function setDisableWorkflowOnSubmit($disable_workflow_on_submit) {
@@ -170,7 +197,7 @@ final class AphrontDialogView extends AphrontView {
     return $this;
   }
 
-  final public function render() {
+  public function render() {
     require_celerity_resource('aphront-dialog-view-css');
 
     $buttons = array();
@@ -211,31 +238,43 @@ final class AphrontDialogView extends AphrontView {
 
     if (!$this->user) {
       throw new Exception(
-        pht('You must call setUser() when rendering an AphrontDialogView.'));
+        pht(
+          'You must call %s when rendering an %s.',
+          'setUser()',
+          __CLASS__));
     }
 
-    $more = $this->class;
+    $classes = array();
+    $classes[] = 'aphront-dialog-view';
+    $classes[] = $this->class;
     if ($this->flush) {
-      $more .= ' aphront-dialog-flush';
+      $classes[] = 'aphront-dialog-flush';
     }
 
     switch ($this->width) {
       case self::WIDTH_FORM:
       case self::WIDTH_FULL:
-        $more .= ' aphront-dialog-view-width-'.$this->width;
+        $classes[] = 'aphront-dialog-view-width-'.$this->width;
         break;
       case self::WIDTH_DEFAULT:
         break;
       default:
-        throw new Exception("Unknown dialog width '{$this->width}'!");
+        throw new Exception(
+          pht(
+            "Unknown dialog width '%s'!",
+            $this->width));
     }
 
     if ($this->isStandalone) {
-      $more .= ' aphront-dialog-view-standalone';
+      $classes[] = 'aphront-dialog-view-standalone';
+    }
+
+    if ($this->objectList) {
+      $classes[] = 'aphront-dialog-object-list';
     }
 
     $attributes = array(
-      'class'   => 'aphront-dialog-view '.$more,
+      'class'   => implode(' ', $classes),
       'sigil'   => 'jx-dialog',
     );
 
@@ -262,15 +301,17 @@ final class AphrontDialogView extends AphrontView {
           'type' => 'hidden',
           'name' => $key,
           'value' => $value,
-          'sigil' => 'aphront-dialog-application-input'
+          'sigil' => 'aphront-dialog-application-input',
         ));
     }
 
     if (!$this->renderAsForm) {
-      $buttons = array(phabricator_form(
-        $this->user,
-        $form_attributes,
-        array_merge($hidden_inputs, $buttons)));
+      $buttons = array(
+        phabricator_form(
+          $this->user,
+          $form_attributes,
+          array_merge($hidden_inputs, $buttons)),
+      );
     }
 
     $children = $this->renderChildren();
@@ -287,13 +328,13 @@ final class AphrontDialogView extends AphrontView {
 
     if ($errors) {
       $children = array(
-        id(new AphrontErrorView())->setErrors($errors),
-        $children);
+        id(new PHUIInfoView())->setErrors($errors),
+        $children,
+      );
     }
 
-    $header = new PHUIActionHeaderView();
-    $header->setHeaderTitle($this->title);
-    $header->setHeaderColor($this->headerColor);
+    $header = new PHUIHeaderView();
+    $header->setHeader($this->title);
 
     $footer = null;
     if ($this->footers) {
@@ -305,6 +346,19 @@ final class AphrontDialogView extends AphrontView {
         $this->footers);
     }
 
+    $tail = null;
+    if ($buttons || $footer) {
+      $tail = phutil_tag(
+        'div',
+        array(
+          'class' => 'aphront-dialog-tail grouped',
+        ),
+        array(
+          $buttons,
+          $footer,
+        ));
+    }
+
     $content = array(
       phutil_tag(
         'div',
@@ -314,18 +368,10 @@ final class AphrontDialogView extends AphrontView {
         $header),
       phutil_tag('div',
         array(
-          'class' => 'aphront-dialog-body grouped',
+          'class' => 'aphront-dialog-body phabricator-remarkup grouped',
         ),
         $children),
-      phutil_tag(
-        'div',
-        array(
-          'class' => 'aphront-dialog-tail grouped',
-        ),
-        array(
-          $buttons,
-          $footer,
-        )),
+      $tail,
     );
 
     if ($this->renderAsForm) {
@@ -339,6 +385,15 @@ final class AphrontDialogView extends AphrontView {
         $attributes,
         $content);
     }
+  }
+
+
+/* -(  AphrontResponseProducerInterface  )----------------------------------- */
+
+
+  public function produceAphrontResponse() {
+    return id(new AphrontDialogResponse())
+      ->setDialog($this);
   }
 
 }

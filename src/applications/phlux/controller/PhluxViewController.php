@@ -2,19 +2,13 @@
 
 final class PhluxViewController extends PhluxController {
 
-  private $key;
-
-  public function willProcessRequest(array $data) {
-    $this->key = $data['key'];
-  }
-
-  public function processRequest() {
-    $request = $this->getRequest();
-    $user = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $this->getViewer();
+    $key = $request->getURIData('key');
 
     $var = id(new PhluxVariableQuery())
-      ->setViewer($user)
-      ->withKeys(array($this->key))
+      ->setViewer($viewer)
+      ->withKeys(array($key))
       ->executeOne();
 
     if (!$var) {
@@ -29,16 +23,16 @@ final class PhluxViewController extends PhluxController {
 
     $header = id(new PHUIHeaderView())
       ->setHeader($title)
-      ->setUser($user)
+      ->setUser($viewer)
       ->setPolicyObject($var);
 
     $actions = id(new PhabricatorActionListView())
-      ->setUser($user)
+      ->setUser($viewer)
       ->setObjectURI($request->getRequestURI())
       ->setObject($var);
 
     $can_edit = PhabricatorPolicyFilter::hasCapability(
-      $user,
+      $viewer,
       $var,
       PhabricatorPolicyCapability::CAN_EDIT);
 
@@ -53,24 +47,15 @@ final class PhluxViewController extends PhluxController {
     $display_value = json_encode($var->getVariableValue());
 
     $properties = id(new PHUIPropertyListView())
-      ->setUser($user)
+      ->setUser($viewer)
       ->setObject($var)
       ->setActionList($actions)
       ->addProperty(pht('Value'), $display_value);
 
-    $xactions = id(new PhluxTransactionQuery())
-      ->setViewer($user)
-      ->withObjectPHIDs(array($var->getPHID()))
-      ->execute();
-
-    $engine = id(new PhabricatorMarkupEngine())
-      ->setViewer($user);
-
-    $xaction_view = id(new PhabricatorApplicationTransactionView())
-      ->setUser($user)
-      ->setObjectPHID($var->getPHID())
-      ->setTransactions($xactions)
-      ->setMarkupEngine($engine);
+    $timeline = $this->buildTransactionTimeline(
+      $var,
+      new PhluxTransactionQuery());
+    $timeline->setShouldTerminate(true);
 
     $object_box = id(new PHUIObjectBoxView())
       ->setHeader($header)
@@ -80,7 +65,7 @@ final class PhluxViewController extends PhluxController {
       array(
         $crumbs,
         $object_box,
-        $xaction_view,
+        $timeline,
       ),
       array(
         'title'  => $title,

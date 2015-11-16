@@ -6,7 +6,7 @@ final class PhabricatorMailManagementShowOutboundWorkflow
   protected function didConstruct() {
     $this
       ->setName('show-outbound')
-      ->setSynopsis('Show diagnostic details about outbound mail.')
+      ->setSynopsis(pht('Show diagnostic details about outbound mail.'))
       ->setExamples(
         '**show-outbound** --id 1 --id 2')
       ->setArguments(
@@ -14,8 +14,14 @@ final class PhabricatorMailManagementShowOutboundWorkflow
           array(
             'name'    => 'id',
             'param'   => 'id',
-            'help'    => 'Show details about outbound mail with given ID.',
+            'help'    => pht('Show details about outbound mail with given ID.'),
             'repeat'  => true,
+          ),
+          array(
+            'name' => 'dump-html',
+            'help' => pht(
+              'Dump the HTML body of the mail. You can redirect it to a '.
+              'file and then open it in a browser.'),
           ),
         ));
   }
@@ -26,7 +32,9 @@ final class PhabricatorMailManagementShowOutboundWorkflow
     $ids = $args->getArg('id');
     if (!$ids) {
       throw new PhutilArgumentUsageException(
-        "Use the '--id' flag to specify one or more messages to show.");
+        pht(
+          "Use the '%s' flag to specify one or more messages to show.",
+          '--id'));
     }
 
     $messages = id(new PhabricatorMetaMTAMail())->loadAllWhere(
@@ -38,13 +46,28 @@ final class PhabricatorMailManagementShowOutboundWorkflow
       $missing = array_diff_key($ids, $messages);
       if ($missing) {
         throw new PhutilArgumentUsageException(
-          'Some specified messages do not exist: '.
-          implode(', ', array_keys($missing)));
+          pht(
+            'Some specified messages do not exist: %s',
+            implode(', ', array_keys($missing))));
       }
     }
 
     $last_key = last_key($messages);
     foreach ($messages as $message_key => $message) {
+      if ($args->getArg('dump-html')) {
+        $html_body = $message->getHTMLBody();
+        if (strlen($html_body)) {
+          $template =
+            "<!doctype html><html><body>{$html_body}</body></html>";
+          $console->writeOut("%s\n", $html_body);
+        } else {
+          $console->writeErr(
+            "%s\n",
+            pht('(This message has no HTML body.)'));
+        }
+        continue;
+      }
+
       $info = array();
 
       $info[] = pht('PROPERTIES');
@@ -53,19 +76,20 @@ final class PhabricatorMailManagementShowOutboundWorkflow
       $info[] = pht('Related PHID: %s', $message->getRelatedPHID());
       $info[] = pht('Message: %s', $message->getMessage());
 
+      $ignore = array(
+        'body' => true,
+        'html-body' => true,
+        'headers' => true,
+        'attachments' => true,
+        'headers.sent' => true,
+        'authors.sent' => true,
+      );
+
       $info[] = null;
       $info[] = pht('PARAMETERS');
       $parameters = $message->getParameters();
       foreach ($parameters as $key => $value) {
-        if ($key == 'body') {
-          continue;
-        }
-
-        if ($key == 'headers') {
-          continue;
-        }
-
-        if ($key == 'attachments') {
+        if (isset($ignore[$key])) {
           continue;
         }
 
@@ -78,7 +102,13 @@ final class PhabricatorMailManagementShowOutboundWorkflow
 
       $info[] = null;
       $info[] = pht('HEADERS');
-      foreach (idx($parameters, 'headers', array()) as $header) {
+
+      $headers = $message->getDeliveredHeaders();
+      if (!$headers) {
+        $headers = $message->generateHeaders();
+      }
+
+      foreach ($headers as $header) {
         list($name, $value) = $header;
         $info[] = "{$name}: {$value}";
       }
@@ -92,26 +122,52 @@ final class PhabricatorMailManagementShowOutboundWorkflow
         }
       }
 
-      $actors = $message->loadAllActors();
-      $actors = array_select_keys(
-        $actors,
-        array_merge($message->getToPHIDs(), $message->getCcPHIDs()));
-      $info[] = null;
-      $info[] = pht('RECIPIENTS');
-      foreach ($actors as $actor) {
-        if ($actor->isDeliverable()) {
-          $info[] = '  '.coalesce($actor->getName(), $actor->getPHID());
-        } else {
-          $info[] = '! '.coalesce($actor->getName(), $actor->getPHID());
-          foreach ($actor->getUndeliverableReasons() as $reason) {
-            $info[] = '    - '.$reason;
+      $all_actors = $message->loadAllActors();
+
+      $actors = $message->getDeliveredActors();
+      if ($actors) {
+        $info[] = null;
+        $info[] = pht('RECIPIENTS');
+        foreach ($actors as $actor_phid => $actor_info) {
+          $actor = idx($all_actors, $actor_phid);
+          if ($actor) {
+            $actor_name = coalesce($actor->getName(), $actor_phid);
+          } else {
+            $actor_name = $actor_phid;
+          }
+
+          $deliverable = $actor_info['deliverable'];
+          if ($deliverable) {
+            $info[] = '  '.$actor_name;
+          } else {
+            $info[] = '! '.$actor_name;
+          }
+
+          $reasons = $actor_info['reasons'];
+          foreach ($reasons as $reason) {
+            $name = PhabricatorMetaMTAActor::getReasonName($reason);
+            $desc = PhabricatorMetaMTAActor::getReasonDescription($reason);
+            $info[] = '    - '.$name.': '.$desc;
           }
         }
       }
 
       $info[] = null;
-      $info[] = pht('BODY');
-      $info[] = $message->getBody();
+      $info[] = pht('TEXT BODY');
+      if (strlen($message->getBody())) {
+        $info[] = $message->getBody();
+      } else {
+        $info[] = pht('(This message has no text body.)');
+      }
+
+      $info[] = null;
+      $info[] = pht('HTML BODY');
+      if (strlen($message->getHTMLBody())) {
+        $info[] = $message->getHTMLBody();
+        $info[] = null;
+      } else {
+        $info[] = pht('(This message has no HTML body.)');
+      }
 
       $console->writeOut('%s', implode("\n", $info));
 

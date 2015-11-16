@@ -22,10 +22,10 @@ abstract class PhabricatorStandardCustomField
     PhabricatorCustomField $template,
     array $config) {
 
-    $types = id(new PhutilSymbolLoader())
+    $types = id(new PhutilClassMapQuery())
       ->setAncestorClass(__CLASS__)
-      ->loadObjects();
-    $types = mpull($types, null, 'getFieldType');
+      ->setUniqueMethod('getFieldType')
+      ->execute();
 
     $fields = array();
     foreach ($config as $key => $value) {
@@ -107,8 +107,10 @@ abstract class PhabricatorStandardCustomField
           $this->setCaption($value);
           break;
         case 'required':
-          $this->setRequired($value);
-          $this->setFieldError(true);
+          if ($value) {
+            $this->setRequired($value);
+            $this->setFieldError(true);
+          }
           break;
         case 'default':
           $this->setFieldValue($value);
@@ -184,7 +186,12 @@ abstract class PhabricatorStandardCustomField
   }
 
   public function shouldUseStorage() {
-    return true;
+    try {
+      $object = $this->newStorageObject();
+      return true;
+    } catch (PhabricatorCustomFieldImplementationIncompleteException $ex) {
+      return false;
+    }
   }
 
   public function getValueForStorage() {
@@ -280,8 +287,7 @@ abstract class PhabricatorStandardCustomField
   public function appendToApplicationSearchForm(
     PhabricatorApplicationSearchEngine $engine,
     AphrontFormView $form,
-    $value,
-    array $handles) {
+    $value) {
     return;
   }
 
@@ -358,8 +364,7 @@ abstract class PhabricatorStandardCustomField
   }
 
   public function getApplicationTransactionTitleForFeed(
-    PhabricatorApplicationTransaction $xaction,
-    PhabricatorFeedStory $story) {
+    PhabricatorApplicationTransaction $xaction) {
 
     $author_phid = $xaction->getAuthorPHID();
     $object_phid = $xaction->getObjectPHID();
@@ -398,6 +403,27 @@ abstract class PhabricatorStandardCustomField
   public function getFieldControlID($key = null) {
     $key = coalesce($key, $this->getRawStandardFieldKey());
     return 'std:control:'.$key;
+  }
+
+  public function shouldAppearInGlobalSearch() {
+    return $this->getFieldConfigValue('fulltext', false);
+  }
+
+  public function updateAbstractDocument(
+    PhabricatorSearchAbstractDocument $document) {
+
+    $field_key = $this->getFieldConfigValue('fulltext');
+
+    // If the caller or configuration didn't specify a valid field key,
+    // generate one automatically from the field index.
+    if (!is_string($field_key) || (strlen($field_key) != 4)) {
+      $field_key = '!'.substr($this->getFieldIndex(), 0, 3);
+    }
+
+    $field_value = $this->getFieldValue();
+    if (strlen($field_value)) {
+      $document->addField($field_key, $field_value);
+    }
   }
 
 }

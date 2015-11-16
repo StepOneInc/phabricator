@@ -11,26 +11,39 @@ final class DrydockBlueprintSearchEngine
     return 'PhabricatorDrydockApplication';
   }
 
-  public function buildSavedQueryFromRequest(AphrontRequest $request) {
-    return new PhabricatorSavedQuery();
+  public function newQuery() {
+    return id(new DrydockBlueprintQuery());
   }
 
-  public function buildQueryFromSavedQuery(PhabricatorSavedQuery $saved) {
-    return new DrydockBlueprintQuery();
+  protected function buildQueryFromParameters(array $map) {
+    $query = $this->newQuery();
+
+    if ($map['isDisabled'] !== null) {
+      $query->withDisabled($map['isDisabled']);
+    }
+
+    return $query;
   }
 
-  public function buildSearchForm(
-    AphrontFormView $form,
-    PhabricatorSavedQuery $saved) {
-
+  protected function buildCustomSearchFields() {
+    return array(
+      id(new PhabricatorSearchThreeStateField())
+        ->setLabel(pht('Disabled'))
+        ->setKey('isDisabled')
+        ->setOptions(
+          pht('(Show All)'),
+          pht('Show Only Disabled Blueprints'),
+          pht('Hide Disabled Blueprints')),
+    );
   }
 
   protected function getURI($path) {
     return '/drydock/blueprint/'.$path;
   }
 
-  public function getBuiltinQueryNames() {
+  protected function getBuiltinQueryNames() {
     return array(
+      'active' => pht('Active Blueprints'),
       'all' => pht('All Blueprints'),
     );
   }
@@ -40,6 +53,8 @@ final class DrydockBlueprintSearchEngine
     $query->setQueryKey($query_key);
 
     switch ($query_key) {
+      case 'active':
+        return $query->setParameter('isDisabled', false);
       case 'all':
         return $query;
     }
@@ -47,7 +62,7 @@ final class DrydockBlueprintSearchEngine
     return parent::buildSavedQueryFromBuiltin($query_key);
   }
 
-  public function renderResultList(
+  protected function renderResultList(
     array $blueprints,
     PhabricatorSavedQuery $query,
     array $handles) {
@@ -64,6 +79,12 @@ final class DrydockBlueprintSearchEngine
 
       if (!$blueprint->getImplementation()->isEnabled()) {
         $item->setDisabled(true);
+        $item->addIcon('fa-chain-broken grey', pht('Implementation'));
+      }
+
+      if ($blueprint->getIsDisabled()) {
+        $item->setDisabled(true);
+        $item->addIcon('fa-ban grey', pht('Disabled'));
       }
 
       $item->addAttribute($blueprint->getImplementation()->getBlueprintName());
@@ -71,7 +92,11 @@ final class DrydockBlueprintSearchEngine
       $view->addItem($item);
     }
 
-    return $view;
+    $result = new PhabricatorApplicationSearchResultView();
+    $result->setObjectList($view);
+    $result->setNoDataString(pht('No blueprints found.'));
+
+    return $result;
   }
 
 }

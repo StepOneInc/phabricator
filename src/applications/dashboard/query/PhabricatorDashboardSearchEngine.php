@@ -11,41 +11,57 @@ final class PhabricatorDashboardSearchEngine
     return 'PhabricatorDashboardApplication';
   }
 
-  public function buildSavedQueryFromRequest(AphrontRequest $request) {
-    return new PhabricatorSavedQuery();
+  public function newQuery() {
+    return id(new PhabricatorDashboardQuery())
+      ->needProjects(true);
   }
 
-  public function buildQueryFromSavedQuery(PhabricatorSavedQuery $saved) {
-    return new PhabricatorDashboardQuery();
-  }
-
-  public function buildSearchForm(
-    AphrontFormView $form,
-    PhabricatorSavedQuery $saved_query) {
-    return;
+  protected function buildCustomSearchFields() {
+    return array(
+      id(new PhabricatorSearchCheckboxesField())
+        ->setKey('statuses')
+        ->setLabel(pht('Status'))
+        ->setOptions(PhabricatorDashboard::getStatusNameMap()),
+    );
   }
 
   protected function getURI($path) {
     return '/dashboard/'.$path;
   }
 
-  public function getBuiltinQueryNames() {
+  protected function getBuiltinQueryNames() {
     return array(
+      'open' => pht('Active Dashboards'),
       'all' => pht('All Dashboards'),
     );
   }
 
   public function buildSavedQueryFromBuiltin($query_key) {
-
     $query = $this->newSavedQuery();
     $query->setQueryKey($query_key);
 
     switch ($query_key) {
       case 'all':
         return $query;
+      case 'open':
+        return $query->setParameter(
+          'statuses',
+          array(
+            PhabricatorDashboard::STATUS_ACTIVE,
+          ));
     }
 
     return parent::buildSavedQueryFromBuiltin($query_key);
+  }
+
+  protected function buildQueryFromParameters(array $map) {
+    $query = $this->newQuery();
+
+    if ($map['statuses']) {
+      $query->withStatuses($map['statuses']);
+    }
+
+    return $query;
   }
 
   protected function renderResultList(
@@ -53,11 +69,41 @@ final class PhabricatorDashboardSearchEngine
     PhabricatorSavedQuery $query,
     array $handles) {
 
+    $dashboards = mpull($dashboards, null, 'getPHID');
     $viewer = $this->requireViewer();
+
+    if ($dashboards) {
+      $installs = id(new PhabricatorDashboardInstall())
+        ->loadAllWhere(
+          'objectPHID IN (%Ls) AND dashboardPHID IN (%Ls)',
+          array(
+            PhabricatorHomeApplication::DASHBOARD_DEFAULT,
+            $viewer->getPHID(),
+          ),
+          array_keys($dashboards));
+      $installs = mpull($installs, null, 'getDashboardPHID');
+    } else {
+      $installs = array();
+    }
+
+    $proj_phids = array();
+    foreach ($dashboards as $dashboard) {
+      foreach ($dashboard->getProjectPHIDs() as $project_phid) {
+        $proj_phids[] = $project_phid;
+      }
+    }
+
+    $proj_handles = id(new PhabricatorHandleQuery())
+      ->setViewer($viewer)
+      ->withPHIDs($proj_phids)
+      ->execute();
 
     $list = new PHUIObjectItemListView();
     $list->setUser($viewer);
-    foreach ($dashboards as $dashboard) {
+    $list->initBehavior('phabricator-tooltips', array());
+    $list->requireResource('aphront-tooltip-css');
+
+    foreach ($dashboards as $dashboard_phid => $dashboard) {
       $id = $dashboard->getID();
 
       $item = id(new PHUIObjectItemView())
@@ -66,10 +112,66 @@ final class PhabricatorDashboardSearchEngine
         ->setHref($this->getApplicationURI("view/{$id}/"))
         ->setObject($dashboard);
 
+      if (isset($installs[$dashboard_phid])) {
+        $install = $installs[$dashboard_phid];
+        if ($install->getObjectPHID() == $viewer->getPHID()) {
+          $attrs = array(
+            'tip' => pht(
+              'This dashboard is installed to your personal homepage.'),
+          );
+          $item->addIcon('fa-user', pht('Installed'), $attrs);
+        } else {
+          $attrs = array(
+            'tip' => pht(
+              'This dashboard is the default homepage for all users.'),
+          );
+          $item->addIcon('fa-globe', pht('Installed'), $attrs);
+        }
+      }
+
+      $project_handles = array_select_keys(
+        $proj_handles,
+        $dashboard->getProjectPHIDs());
+
+      $item->addAttribute(
+        id(new PHUIHandleTagListView())
+          ->setLimit(4)
+          ->setNoDataString(pht('No Projects'))
+          ->setSlim(true)
+          ->setHandles($project_handles));
+
+      if ($dashboard->isClosed()) {
+        $item->setDisabled(true);
+      }
+
+      $can_edit = PhabricatorPolicyFilter::hasCapability(
+        $viewer,
+        $dashboard,
+        PhabricatorPolicyCapability::CAN_EDIT);
+
+      $href_view = $this->getApplicationURI("manage/{$id}/");
+      $item->addAction(
+        id(new PHUIListItemView())
+          ->setName(pht('Manage'))
+          ->setIcon('fa-th')
+          ->setHref($href_view));
+
+      $href_edit = $this->getApplicationURI("edit/{$id}/");
+      $item->addAction(
+        id(new PHUIListItemView())
+          ->setName(pht('Edit'))
+          ->setIcon('fa-pencil')
+          ->setHref($href_edit)
+          ->setDisabled(!$can_edit));
+
       $list->addItem($item);
     }
 
-    return $list;
+    $result = new PhabricatorApplicationSearchResultView();
+    $result->setObjectList($list);
+    $result->setNoDataString(pht('No dashboards found.'));
+
+    return $result;
   }
 
 }

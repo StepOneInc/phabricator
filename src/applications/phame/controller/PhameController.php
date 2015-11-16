@@ -2,47 +2,30 @@
 
 abstract class PhameController extends PhabricatorController {
 
-  protected function renderSideNavFilterView() {
-
-    $base_uri = new PhutilURI($this->getApplicationURI());
-
-    $nav = new AphrontSideNavFilterView();
-    $nav->setBaseURI($base_uri);
-
-    $nav->addLabel(pht('Create'));
-    $nav->addFilter('post/new', pht('New Post'));
-    $nav->addFilter('blog/new', pht('New Blog'));
-
-    $nav->addLabel(pht('Posts'));
-    $nav->addFilter('post/draft', pht('My Drafts'));
-    $nav->addFilter('post', pht('My Posts'));
-    $nav->addFilter('post/all', pht('All Posts'));
-
-    $nav->addLabel(pht('Blogs'));
-    $nav->addFilter('blog/user', pht('Joinable Blogs'));
-    $nav->addFilter('blog/all', pht('All Blogs'));
-
-    $nav->selectFilter(null);
-
-    return $nav;
-  }
-
   protected function renderPostList(
     array $posts,
     PhabricatorUser $viewer,
     $nodata) {
     assert_instances_of($posts, 'PhamePost');
 
-    $stories = array();
-
+    $handle_phids = array();
     foreach ($posts as $post) {
-      $blogger = $this->getHandle($post->getBloggerPHID())->renderLink();
-      $bloggerURI = $this->getHandle($post->getBloggerPHID())->getURI();
-      $bloggerImage = $this->getHandle($post->getBloggerPHID())->getImageURI();
+      $handle_phids[] = $post->getBloggerPHID();
+      if ($post->getBlog()) {
+        $handle_phids[] = $post->getBlog()->getPHID();
+      }
+    }
+    $handles = $viewer->loadHandles($handle_phids);
+
+    $stories = array();
+    foreach ($posts as $post) {
+      $blogger = $handles[$post->getBloggerPHID()]->renderLink();
+      $blogger_uri = $handles[$post->getBloggerPHID()]->getURI();
+      $blogger_image = $handles[$post->getBloggerPHID()]->getImageURI();
 
       $blog = null;
       if ($post->getBlog()) {
-        $blog = $this->getHandle($post->getBlog()->getPHID())->renderLink();
+        $blog = $handles[$post->getBlog()->getPHID()]->renderLink();
       }
 
       $phame_post = '';
@@ -56,12 +39,16 @@ abstract class PhameController extends PhabricatorController {
 
       $blogger = phutil_tag('strong', array(), $blogger);
       if ($post->isDraft()) {
-        $title = pht('%s drafted a blog post on %s.',
-          $blogger, $blog);
+        $title = pht(
+          '%s drafted a blog post on %s.',
+          $blogger,
+          $blog);
         $title = phutil_tag('em', array(), $title);
       } else {
-        $title = pht('%s wrote a blog post on %s.',
-          $blogger, $blog);
+        $title = pht(
+          '%s wrote a blog post on %s.',
+          $blogger,
+          $blog);
       }
 
       $item = id(new PHUIObjectItemView())
@@ -71,9 +58,9 @@ abstract class PhameController extends PhabricatorController {
 
       $story = id(new PHUIFeedStoryView())
         ->setTitle($title)
-        ->setImage($bloggerImage)
-        ->setImageHref($bloggerURI)
-        ->setAppIcon('phame-dark')
+        ->setImage($blogger_image)
+        ->setImageHref($blogger_uri)
+        ->setAppIcon('fa-star')
         ->setUser($viewer)
         ->setPontification($phame_post, $phame_title);
 
@@ -84,7 +71,6 @@ abstract class PhameController extends PhabricatorController {
 
         $story->addAction(id(new PHUIIconView())
           ->setHref($this->getApplicationURI('post/edit/'.$post->getID().'/'))
-          ->setText(pht('Edit'))
           ->setIconFont('fa-pencil'));
       }
 
@@ -96,16 +82,12 @@ abstract class PhameController extends PhabricatorController {
     }
 
     if (empty($stories)) {
-      return id(new AphrontErrorView())
-        ->setSeverity(AphrontErrorView::SEVERITY_NODATA)
-        ->appendChild($nodata);
+      return id(new PHUIBoxView())
+        ->appendChild($nodata)
+        ->addClass('mlt mlb msr msl');
     }
 
     return $stories;
-  }
-
-  public function buildApplicationMenu() {
-    return $this->renderSideNavFilterView()->getMenu();
   }
 
   protected function buildApplicationCrumbs() {

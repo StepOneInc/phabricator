@@ -1,20 +1,14 @@
 <?php
 
-final class PhamePostFramedController extends PhameController {
+final class PhamePostFramedController extends PhamePostController {
 
-  private $id;
-
-  public function willProcessRequest(array $data) {
-    $this->id = $data['id'];
-  }
-
-  public function processRequest() {
-    $request = $this->getRequest();
-    $user = $request->getUser();
+  public function handleRequest(AphrontRequest $request) {
+    $viewer = $request->getViewer();
+    $id = $request->getURIData('id');
 
     $post = id(new PhamePostQuery())
-      ->setViewer($user)
-      ->withIDs(array($this->id))
+      ->setViewer($viewer)
+      ->withIDs(array($id))
       ->requireCapabilities(
         array(
           PhabricatorPolicyCapability::CAN_EDIT,
